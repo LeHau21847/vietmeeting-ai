@@ -1,0 +1,55 @@
+{
+  "expo": {
+    "name": "VietMeeting AI",
+    "slug": "vietmeeting-ai",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "image": "./assets/splash.png",
+      "resizeMode": "contain",
+      "backgroundColor": "#0f0f1a"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": false,
+      "bundleIdentifier": "vn.vietmeeting.ai",
+      "infoPlist": {
+        "NSMicrophoneUsageDescription": "VietMeeting AI cần quyền truy cập Microphone để ghi âm cuộc họp và chuyển đổi giọng nói thành văn bản.",
+        "NSCameraUsageDescription": "VietMeeting AI không sử dụng camera.",
+        "UIBackgroundModes": ["audio"]
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "foregroundImage": "./assets/adaptive-icon.png",
+        "backgroundColor": "#0f0f1a"
+      },
+      "package": "vn.vietmeeting.ai",
+      "permissions": [
+        "RECORD_AUDIO",
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "web": {
+      "favicon": "./assets/favicon.png"
+    },
+    "plugins": [
+      [
+        "expo-av",
+        {
+          "microphonePermission": "VietMeeting AI cần quyền Microphone để ghi âm cuộc họp và phân tích bằng AI."
+        }
+      ]
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "vietmeeting-ai-local"
+      }
+    }
+  }
+}

@@ -1,0 +1,62 @@
+# ==============================================================================
+# .gitignore - VietMeeting AI Project (Python FastAPI + Expo React Native)
+# ==============================================================================
+
+# 1. Environment & API Secrets (QUAN TRỌNG: KHÔNG BAO GIỜ COMMIT API KEY)
+.env
+.env.local
+.env.*.local
+*.pem
+*.key
+
+# 2. Database & User Uploads (Dữ liệu cá nhân & file ghi âm nặng)
+vietmeeting.db
+*.sqlite
+*.sqlite3
+*.db
+*.db-journal
+uploads/
+*.wav
+*.mp3
+*.m4a
+*.webm
+*.ogg
+*.flac
+*.doc
+*.docx
+*.pdf
+
+# 3. Python Virtual Environment & Cache
+venv/
+.venv/
+env/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.coverage
+htmlcov/
+*.egg-info/
+dist/
+build/
+
+# 4. Node.js & Expo Mobile Web
+node_modules/
+mobile/node_modules/
+.expo/
+mobile/.expo/
+mobile/dist/
+.expo-shared/
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# 5. OS & Editor Files
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*.swo

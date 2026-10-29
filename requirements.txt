@@ -1,0 +1,29 @@
+# ===================================================
+# VietMeeting AI - Dependencies
+# Python >= 3.10
+# ===================================================
+
+# --- Web Framework ---
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+# --- Database ---
+sqlalchemy==2.0.30
+aiosqlite==0.20.0          # Async SQLite driver for SQLAlchemy
+
+# --- Validation & Serialization ---
+pydantic==2.7.1
+pydantic-settings==2.3.0
+
+# --- File Upload ---
+python-multipart==0.0.9
+
+# --- Local AI: Speech-to-Text ---
+faster-whisper==1.0.3
+
+# --- Local AI: LLM via Ollama ---
+ollama==0.2.0
+
+# --- Utilities ---
+python-dotenv==1.0.1
+aiofiles==23.2.1            # Async file I/O
