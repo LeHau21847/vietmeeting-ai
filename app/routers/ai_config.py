@@ -75,6 +75,12 @@ async def set_current_ai_config(body: AIConfigRequest) -> AIConfigResponse:
             new_cfg["active_engine"],
         )
         return AIConfigResponse(**new_cfg)
+    except ValueError as val_err:
+        logger.warning("⚠️ Khóa Gemini API không hợp lệ: %s", val_err)
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={"error": "invalid_gemini_key", "message": str(val_err)},
+        )
     except Exception as exc:
         logger.error("❌ Lỗi cập nhật AI Config: %s", exc, exc_info=True)
         raise HTTPException(

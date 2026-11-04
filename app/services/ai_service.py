@@ -152,9 +152,21 @@ _GEMINI_API_KEY: str = _read_env_value("GEMINI_API_KEY", "")
 _PREFERRED_AI_ENGINE: str = _read_env_value("PREFERRED_AI_ENGINE", "gemini")
 
 
+def is_valid_gemini_key(key: str | None) -> bool:
+    """Kiểm tra tính hợp lệ về mặt hình thức của Gemini API Key."""
+    if not key:
+        return False
+    k = key.strip()
+    if len(k) < 30:
+        return False
+    if "vietmeeting" in k.lower():
+        return False
+    return True
+
+
 def get_ai_config() -> dict[str, Any]:
     """Lấy thông tin cấu hình AI hiện tại cho client."""
-    has_key = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    has_key = is_valid_gemini_key(_GEMINI_API_KEY)
     masked_key = ""
     if has_key:
         k = _GEMINI_API_KEY.strip()
@@ -179,12 +191,30 @@ def update_ai_config(api_key: str | None = None, preferred_engine: str | None = 
     """
     Cập nhật Gemini API Key và Preferred Engine ngay trong runtime,
     đồng thời ghi đè vào file .env để lưu vĩnh viễn.
+    Kiểm tra tính hợp lệ thật sự của API Key bằng live probe.
     """
     global _GEMINI_API_KEY, _PREFERRED_AI_ENGINE
 
     if api_key is not None:
-        _GEMINI_API_KEY = api_key.strip()
-        os.environ["GEMINI_API_KEY"] = _GEMINI_API_KEY
+        key_cleaned = api_key.strip()
+        if key_cleaned:
+            if not is_valid_gemini_key(key_cleaned):
+                raise ValueError("Khóa Gemini API không đúng định dạng (phải có tối thiểu 30 ký tự và không chứa tên dự án).")
+            # Live probe to Google Gemini API
+            try:
+                with httpx.Client(timeout=8.0) as test_client:
+                    test_url = f"{GEMINI_API_BASE}/v1beta/models?key={key_cleaned}"
+                    test_res = test_client.get(test_url)
+                    if test_res.status_code != 200:
+                        raise ValueError(f"Khóa Gemini API không hợp lệ hoặc đã bị Google từ chối (Mã HTTP {test_res.status_code}).")
+            except httpx.RequestError as net_err:
+                logger.warning("⚠️ Không thể kết nối tới Google API để kiểm tra khóa: %s", net_err)
+
+            _GEMINI_API_KEY = key_cleaned
+            os.environ["GEMINI_API_KEY"] = _GEMINI_API_KEY
+        else:
+            _GEMINI_API_KEY = ""
+            os.environ["GEMINI_API_KEY"] = ""
 
     if preferred_engine is not None and preferred_engine.lower() in ("gemini", "local"):
         _PREFERRED_AI_ENGINE = preferred_engine.lower()
@@ -481,7 +511,8 @@ async def _call_gemini_generate_content(
                     }
                 ],
                 "generationConfig": {
-                    "temperature": 0.1,
+                    "temperature": 0.0,
+                    "maxOutputTokens": 8192,
                 },
             }
             if system_instruction:
@@ -507,7 +538,10 @@ async def _call_gemini_generate_content(
                     # Model không hỗ trợ responseMimeType -> Thử lại không có responseMimeType
                     logger.info("🔄 [Gemini API] Model '%s' không hỗ trợ JSON mode ép buộc. Thử lại ở chế độ Plain text prompt...", model)
                     body_no_json = dict(body)
-                    body_no_json["generationConfig"] = {"temperature": 0.1}
+                    body_no_json["generationConfig"] = {
+                        "temperature": 0.0,
+                        "maxOutputTokens": 8192,
+                    }
                     res_retry = await client.post(url, json=body_no_json)
                     if res_retry.status_code == 200:
                         data = res_retry.json()
@@ -631,11 +665,11 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
 async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: int = 0) -> dict[str, Any]:
     """
     Pha 2: Phân tích Biên bản Hành chính & Trích xuất Nhiệm vụ bằng Google Gemini API.
-    Cấu trúc biên bản 3 phần chuẩn chỉ:
-      I. TÓM TẮT ĐIỀU HÀNH
-      II. NỘI DUNG DIỄN BIẾN CHI TIẾT
-      III. KẾT LUẬN & ĐỊNH HƯỚNG TRỌNG TÂM
-    Trích xuất mảng tasks tối thiểu 5-10 công việc thực tế.
+    Tuân thủ nghiêm ngặt nguyên tắc ZERO HALLUCINATION & EXHAUSTIVE DETAIL:
+      - temperature = 0.0, maxOutputTokens = 8192
+      - Không sáng tạo / suy diễn bất kỳ thông tin nào ngoài bản gỡ băng
+      - Với cuộc họp dài (> 6000 ký tự): áp dụng Multi-Chunk Detailed Synthesis để bảo toàn
+        100% ý kiến đại biểu, tên tờ trình, số liệu pháp lý, phương án lựa chọn và nhiệm vụ.
     """
     start_time = time.perf_counter()
 
@@ -644,36 +678,99 @@ async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: i
             meeting_id,
             status="summarizing",
             progress_percent=75,
-            current_step_detail="Google Gemini Pro AI đang tổng hợp biên bản và trích xuất chỉ đạo...",
+            current_step_detail="Google Gemini AI đang tổng hợp biên bản toàn văn chi tiết...",
         )
 
     system_instruction = (
-        "Bạn là thư ký trưởng chuyên nghiệp của cơ quan hành chính và tập đoàn doanh nghiệp tại Việt Nam. "
-        "Nhiệm vụ của bạn là phân tích sâu sắc bản gỡ băng cuộc họp, tổng hợp thành một Biên bản họp hoàn chỉnh, "
-        "trang trọng, đúng thể thức và trích xuất danh sách công việc/chỉ đạo hành động cụ thể."
+        "Bạn là Thư ký Hành chính cấp cao tại Việt Nam, phụ trách lập Biên bản Cuộc họp chính thức "
+        "theo quy chuẩn thể thức văn bản hành chính (Nghị định 30/2020/NĐ-CP).\n\n"
+        "NGUYÊN TẮC BẮT BUỘC (ZERO HALLUCINATION & EXHAUSTIVE DETAIL):\n"
+        "1. TUYỆT ĐỐI KHÔNG BỊA ĐẶT HOẶC SÁNG TẠO: Chỉ ghi nhận các dữ kiện, nhân vật, phát biểu, số liệu thống kê, "
+        "dự án, điều luật, văn bản CÓ THẬT trong bản gỡ băng. Không tự suy diễn chức vụ, tên người hay kết luận.\n"
+        "2. Nếu một nội dung không được nói rõ trong băng (chủ trì, thư ký, thời hạn...), hãy ghi 'Theo chương trình kỳ họp / Chưa nêu cụ thể', không tự bịa đặt.\n"
+        "3. MỤC II - DIỄN BIẾN CHI TIẾT: Phải ghi nhận tuần tự từng đại biểu/người phát biểu và từng nội dung trọng tâm. "
+        "Phải bóc tách rõ ràng: Người phát biểu & chức vụ (nếu có), tên tờ trình/báo cáo, các ý kiến/đề xuất cụ thể (ý 1, ý 2, ý 3...), "
+        "các con số thống kê hoặc số hiệu văn bản pháp lý, thời hạn thi hành, phương án lựa chọn (phương án 1 hay 2). "
+        "Tuyệt đối không tóm tắt chung chung 1-2 câu sơ sài.\n"
+        "4. MỤC III - KẾT LUẬN & PHÂN CÔNG: Trích xuất đầy đủ các chỉ đạo, quyết sách đã chốt và trích xuất từ 6 đến 12 đầu việc thực tế (tasks) "
+        "giao cho từng đơn vị/cá nhân, ghi rõ nội dung việc và thời hạn hoàn thành."
     )
 
-    user_prompt = f"""Dưới đây là toàn bộ bản gỡ băng chi tiết của cuộc họp:
---- BẮT ĐẦU BẢN GỠ BĂNG ---
-{transcript_text}
---- HẾT BẢN GỠ BĂNG ---
+    detailed_source_text = transcript_text
 
-Hãy tổng hợp thành biên bản họp và trích xuất danh sách công việc. Trả về DUY NHẤT một JSON Object hợp lệ có cấu trúc chính xác như sau:
+    # Đối với cuộc họp dài (> 6000 ký tự), thực hiện Multi-Chunk Detailed Synthesis
+    if len(transcript_text) > 6000:
+        logger.info("📑 Bản gỡ băng dài (%d ký tự) -> Kích hoạt Multi-Chunk Detailed Synthesis...", len(transcript_text))
+        chunk_size = 5000
+        overlap = 400
+        chunks = []
+        idx = 0
+        while idx < len(transcript_text):
+            end_idx = min(idx + chunk_size, len(transcript_text))
+            chunk = transcript_text[idx:end_idx]
+            chunks.append(chunk)
+            if end_idx >= len(transcript_text):
+                break
+            idx += (chunk_size - overlap)
+
+        if meeting_id > 0:
+            update_progress(
+                meeting_id,
+                progress_percent=78,
+                current_step_detail=f"Đang bóc tách chi tiết từng phần ({len(chunks)} phần)...",
+            )
+
+        chunk_details: list[str] = []
+        for c_idx, c_text in enumerate(chunks):
+            chunk_prompt = f"""Dưới đây là phần {c_idx + 1}/{len(chunks)} của bản gỡ băng cuộc họp:
+---
+{c_text}
+---
+
+Hãy phân tích toàn diện và ghi nhận chi tiết 100% nội dung phần này (ZERO HALLUCINATION):
+- Tên và chức danh người phát biểu (nếu có).
+- Tên tờ trình, báo cáo, văn bản được đề cập.
+- Các ý kiến, quan điểm, đề xuất cụ thể (gạch đầu dòng chi tiết từng luận điểm, phương án 1, 2...).
+- Số liệu thống kê, kinh phí, mốc thời gian, số hiệu nghị định/luật.
+- Các chỉ đạo hoặc nhiệm vụ giao cho ai.
+Không tóm tắt sơ sài, giữ nguyên vẹn các thông tin thực tế."""
+
+            try:
+                c_out = await _call_gemini_generate_content(
+                    parts=[{"text": chunk_prompt}],
+                    system_instruction=system_instruction,
+                    api_key=_GEMINI_API_KEY,
+                    models_override=GEMINI_TEXT_MODELS,
+                )
+                chunk_details.append(f"### DIỄN BIẾN PHẦN {c_idx + 1}:\n{c_out}")
+            except Exception as c_err:
+                logger.warning("⚠️ Lỗi phân tích chunk %d: %s. Dùng trích đoạn gốc...", c_idx + 1, c_err)
+                chunk_details.append(f"### DIỄN BIẾN PHẦN {c_idx + 1}:\n{c_text[:3000]}")
+
+        detailed_source_text = "\n\n".join(chunk_details)
+
+    user_prompt = f"""Dưới đây là dữ liệu diễn biến chi tiết của cuộc họp:
+--- BẮT ĐẦU DỮ LIỆU CUỘC HỌP ---
+{detailed_source_text}
+--- HẾT DỮ LIỆU CUỘC HỌP ---
+
+Hãy tổng hợp thành Biên bản cuộc họp toàn văn chi tiết (Nghị định 30/2020/NĐ-CP) và trích xuất danh sách công việc. 
+Trả về DUY NHẤT một JSON Object hợp lệ có cấu trúc chính xác như sau:
 {{
-  "minutes": "Nội dung biên bản đầy đủ, trang trọng, mạch lạc gồm đúng 3 phần:\\n\\nI. TÓM TẮT ĐIỀU HÀNH\\n(Tổng kết cô đọng 1-2 đoạn văn về bối cảnh, mục tiêu, thành phần và tinh thần chung của cuộc họp)\\n\\nII. NỘI DUNG DIỄN BIẾN CHI TIẾT\\n(Trình bày chi tiết từng sự kiện, chủ đề thảo luận lớn, ý kiến phát biểu của các bên và các giải pháp đề xuất, chia theo từng mục hoặc gạch đầu dòng rõ ràng)\\n\\nIII. KẾT LUẬN & ĐỊNH HƯỚNG TRỌNG TÂM\\n(Các quyết sách đã chốt, định hướng hành động và yêu cầu của người chủ trì)",
+  "minutes": "Nội dung biên bản đầy đủ, trang trọng, mạch lạc gồm đúng 3 phần:\\n\\nI. TỔNG QUAN & TÓM TẮT ĐIỀU HÀNH\\n(Tổng kết cô đọng về bối cảnh, mục tiêu, thành phần và tinh thần chung của cuộc họp. Nếu không có tên cụ thể, ghi rõ 'Theo chương trình kỳ họp / Chưa nêu cụ thể', tuyệt đối không tự bịa đặt)\\n\\nII. NỘI DUNG DIỄN BIẾN CHI TIẾT\\n(Trình bày chi tiết toàn văn từng người phát biểu, từng báo cáo/tờ trình, các ý kiến 1, 2, 3, số liệu thống kê, văn bản pháp lý, các phương án lựa chọn, không tóm tắt chung chung)\\n\\nIII. KẾT LUẬN & ĐỊNH HƯỚNG TRỌNG TÂM\\n(Các quyết sách đã chốt, kết luận của người chủ trì và yêu cầu triển khai)",
   "tasks": [
     {{
       "title": "Nội dung công việc hoặc chỉ đạo cụ thể (dưới 120 ký tự)",
-      "assignee": "Đơn vị hoặc Người chịu trách nhiệm thực hiện",
+      "assignee": "Đơn vị hoặc Người chịu trách nhiệm thực hiện (chính xác theo nội dung)",
       "deadline": "Thời hạn hoặc mốc thời gian hoàn thành cụ thể"
     }}
   ]
 }}
 
 QUY TẮC BẮT BUỘC:
-1. "minutes": Viết bằng tiếng Việt chuẩn mực hành chính, tuyệt đối không dùng các từ viết tắt thô, chia rõ từng phần I, II, III.
-2. "tasks": Luôn trích xuất tối thiểu từ 5 đến 10 nhiệm vụ / chỉ đạo hành động thực tế từ nội dung cuộc họp.
-3. Nếu không nêu rõ người phụ trách, hãy ghi đơn vị phù hợp (ví dụ: 'Các bộ, ngành, địa phương', 'Ban Quản lý dự án', 'Bộ phận Kế hoạch'...).
+1. "minutes": Viết bằng tiếng Việt chuẩn mực hành chính, chia rõ từng phần I, II, III. Phần II phải cực kỳ chi tiết theo từng người phát biểu / từng nội dung.
+2. "tasks": Luôn trích xuất từ 6 đến 12 nhiệm vụ / chỉ đạo hành động thực tế từ nội dung cuộc họp.
+3. Nếu không nêu rõ người phụ trách, hãy ghi đơn vị phù hợp có trong nội dung (ví dụ: 'Các bộ, ngành, địa phương', 'Ban Quản lý dự án', 'Đơn vị chuyên môn'...).
 4. Nếu không nêu thời hạn cụ thể, hãy ghi 'Trong kế hoạch sắp tới' hoặc 'Sớm triển khai'.
 5. KHÔNG viết bất kỳ chữ nào bên ngoài JSON.
 """
@@ -946,7 +1043,7 @@ async def transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any
         raise ValueError(f"File audio rỗng (0 bytes): {file_path}")
 
     # Ưu tiên Google Gemini API nếu khả dụng
-    has_gemini = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    has_gemini = is_valid_gemini_key(_GEMINI_API_KEY)
     if has_gemini and _PREFERRED_AI_ENGINE != "local":
         try:
             logger.info("✨ [Hybrid AI] Đang chạy bóc băng bằng Google Gemini Multimodal Audio API...")
@@ -1310,15 +1407,29 @@ def _run_reduce_phase(chunk_summaries: list[str], full_transcript: str, meeting_
 
 
 def _format_fallback_minutes(chunk_summaries: list[str], full_transcript: str) -> str:
-    """Tổ chức biên bản có cấu trúc 3 phần sạch sẽ khi Reduce gặp lỗi."""
-    sentences = re.split(r"(?<=[.!?])\s+", full_transcript[:1000])
-    intro_sentences = [s.strip() for s in sentences[:3] if len(s.strip()) > 20]
-    exec_summary = " ".join(intro_sentences) or "Cuộc họp đã diễn ra nghiêm túc, tập trung rà soát tiến độ và thống nhất các nhiệm vụ trọng tâm."
+    """Tổ chức biên bản có cấu trúc 3 phần dựa 100% trên dữ liệu thực tế của transcript (Zero-Hallucination)."""
+    raw_sentences = [s.strip() for s in re.split(r"(?<=[.!?])\s+", full_transcript) if len(s.strip()) > 20]
+    intro_sentences = raw_sentences[:3] if raw_sentences else []
+    exec_summary = " ".join(intro_sentences) if intro_sentences else "Theo chương trình kỳ họp / Chưa nêu cụ thể."
 
     detailed_sections: list[str] = []
     for s in chunk_summaries:
         cleaned_section = re.sub(r"^###\s*", "", s).strip()
-        detailed_sections.append(cleaned_section)
+        if cleaned_section:
+            detailed_sections.append(cleaned_section)
+
+    if not detailed_sections and raw_sentences:
+        detailed_sections = [f"- {s}" for s in raw_sentences[3:15]]
+
+    # Trích xuất kết luận từ các câu thực tế có từ khóa chỉ đạo
+    conclusion_candidates = [
+        s for s in raw_sentences
+        if any(kw in s.lower() for kw in ["kết luận", "chỉ đạo", "yêu cầu", "thống nhất", "giao", "đề nghị"])
+    ]
+    if conclusion_candidates:
+        conclusion_text = "\n".join(f"- {s}" for s in conclusion_candidates[:6])
+    else:
+        conclusion_text = "- Tiếp tục bám sát các nội dung chỉ đạo đã nêu trong bản ghi cuộc họp."
 
     return (
         f"I. TỔNG QUAN & TÓM TẮT ĐIỀU HÀNH\n"
@@ -1326,8 +1437,7 @@ def _format_fallback_minutes(chunk_summaries: list[str], full_transcript: str) -
         f"II. NỘI DUNG DIỄN BIẾN THẢO LUẬN CHI TIẾT\n"
         + "\n\n".join(detailed_sections)
         + f"\n\nIII. KẾT LUẬN & CHỈ ĐẠO TRỌNG TÂM\n"
-        f"- Thống nhất các mục tiêu kế hoạch đã đề ra, yêu cầu các bộ phận phối hợp chặt chẽ.\n"
-        f"- Đề nghị người phụ trách đôn đốc, theo dõi tiến độ từng mốc thời gian để đạt kết quả cao nhất."
+        f"{conclusion_text}"
     )
 
 
@@ -1489,7 +1599,7 @@ async def generate_minutes_and_tasks(text: str, meeting_id: int = 0) -> dict[str
         raise ValueError("Văn bản transcript không được rỗng.")
 
     # Ưu tiên Google Gemini API nếu khả dụng
-    has_gemini = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    has_gemini = is_valid_gemini_key(_GEMINI_API_KEY)
     if has_gemini and _PREFERRED_AI_ENGINE != "local":
         try:
             logger.info("✨ [Hybrid AI] Đang tạo biên bản & trích xuất tasks bằng Google Gemini API...")
@@ -1624,7 +1734,7 @@ LƯU Ý BẮT BUỘC:
 - KHÔNG viết bất kỳ chữ nào bên ngoài JSON.
 """
 
-    has_gemini = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    has_gemini = is_valid_gemini_key(_GEMINI_API_KEY)
     minutes_text = ""
     tasks_list: list[dict[str, Any]] = []
 
@@ -1745,7 +1855,7 @@ CÂU HỎI CỦA NGƯỜI DÙNG:
 
 Hãy trả lời câu hỏi trên một cách chính xác, mạch lạc và bám sát tuyệt đối vào dữ liệu cuộc họp."""
 
-    has_gemini = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    has_gemini = is_valid_gemini_key(_GEMINI_API_KEY)
     answer_text = ""
     engine_used = "gemini"
 

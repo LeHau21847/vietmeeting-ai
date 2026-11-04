@@ -108,6 +108,7 @@ export default function RecordingScreen(): React.JSX.Element {
   // Upload file info
   const [selectedFileName, setSelectedFileName] = useState<string>("");
   const [selectedFileSize, setSelectedFileSize] = useState<string>("");
+  const [localAudioUrl, setLocalAudioUrl] = useState<string>("");
 
   // Ghi chú trọng tâm của Thư ký (Granola-style hybrid notes)
   const [secretaryNotes, setSecretaryNotes] = useState<string>("");
@@ -358,6 +359,7 @@ export default function RecordingScreen(): React.JSX.Element {
       audioUri = recordingRef.current.getURI();
       recordingRef.current = null;
       if (!audioUri) throw new Error("Không lấy được đường dẫn tệp âm thanh.");
+      setLocalAudioUrl(audioUri);
     } catch (error) {
       setErrorMessage("Không thể lưu tệp ghi âm.");
       setErrorDetail(error instanceof Error ? error.message : String(error));
@@ -384,6 +386,10 @@ export default function RecordingScreen(): React.JSX.Element {
 
           setSelectedFileName(file.name);
           setSelectedFileSize(`${(file.size / (1024 * 1024)).toFixed(1)} MB`);
+          try {
+            const objUrl = URL.createObjectURL(file);
+            setLocalAudioUrl(objUrl);
+          } catch {}
 
           setResult(null);
           setErrorMessage("");
@@ -894,6 +900,7 @@ export default function RecordingScreen(): React.JSX.Element {
                   meetingId={meetingId}
                   meetingTitle={meetingTitle}
                   result={result}
+                  localAudioUrl={localAudioUrl}
                   activeTab={activeTab}
                   onTabChange={setActiveTab}
                   fadeAnim={fadeAnim}
@@ -962,12 +969,13 @@ function StudioAudioPlayer({ audioUrl, seekToRef }: StudioAudioPlayerProps): Rea
     if (seekToRef) {
       seekToRef.current = (seconds: number) => {
         if (audioRef.current) {
-          audioRef.current.currentTime = Math.max(0, Math.min(seconds, audioRef.current.duration || seconds));
+          const dur = audioRef.current.duration || duration || seconds;
+          audioRef.current.currentTime = Math.max(0, Math.min(seconds, dur));
           audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
         }
       };
     }
-  }, [seekToRef]);
+  }, [seekToRef, duration]);
 
   const togglePlay = () => {
     if (!audioRef.current) return;
@@ -979,11 +987,20 @@ function StudioAudioPlayer({ audioUrl, seekToRef }: StudioAudioPlayerProps): Rea
     }
   };
 
+  const seekRelative = (delta: number) => {
+    if (!audioRef.current) return;
+    const dur = audioRef.current.duration || duration || 0;
+    const target = Math.max(0, Math.min(dur, (audioRef.current.currentTime || 0) + delta));
+    audioRef.current.currentTime = target;
+    setCurrentTime(target);
+  };
+
   const handleSeek = (e: any) => {
     if (!audioRef.current || !duration) return;
     try {
       const rect = e.currentTarget.getBoundingClientRect();
-      const x = (e.clientX ?? (e.nativeEvent as any).clientX) - rect.left;
+      const clientX = e.clientX ?? (e.nativeEvent as any)?.clientX ?? 0;
+      const x = clientX - rect.left;
       const ratio = Math.max(0, Math.min(1, x / rect.width));
       const targetTime = ratio * duration;
       audioRef.current.currentTime = targetTime;
@@ -1013,39 +1030,99 @@ function StudioAudioPlayer({ audioUrl, seekToRef }: StudioAudioPlayerProps): Rea
 
   return (
     <View style={playerStyles.container}>
-      <View style={playerStyles.row}>
-        <Pressable
-          onPress={togglePlay}
-          style={({ pressed }) => [playerStyles.playBtn, pressed && { opacity: 0.8 }]}
-        >
-          <Feather name={isPlaying ? "pause" : "play"} size={15} color="#FFFFFF" />
-        </Pressable>
-
-        <View style={playerStyles.infoCol}>
-          <View style={playerStyles.labelRow}>
-            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
-              <Feather name="volume-2" size={11} color="#60A5FA" />
-              <Text style={playerStyles.title}>Trình phát âm thanh gốc (Studio Audio Player)</Text>
-            </View>
-            <Text style={playerStyles.timeText}>
-              {fmt(currentTime)} / {fmt(duration)}
-            </Text>
+      {/* Header Info Row */}
+      <View style={playerStyles.headerRow}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+          <Feather name="volume-2" size={13} color="#38BDF8" />
+          <Text style={playerStyles.title}>Trình phát âm thanh gốc (Studio Audio Player)</Text>
+          <View style={playerStyles.engineBadge}>
+            <Text style={playerStyles.engineBadgeText}>HTTP 206 STREAM</Text>
           </View>
+        </View>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          <Text style={playerStyles.timeText}>
+            {fmt(currentTime)} / {fmt(duration)}
+          </Text>
+          <Pressable
+            onPress={cycleRate}
+            style={({ pressed }) => [playerStyles.rateBtn, pressed && { opacity: 0.8 }]}
+          >
+            <Text style={playerStyles.rateText}>{playbackRate.toFixed(2).replace(".00", ".0")}x</Text>
+          </Pressable>
+        </View>
+      </View>
 
+      {/* Main Scrubber Slider */}
+      <View style={playerStyles.scrubberContainer}>
+        {Platform.OS === "web" ? (
+          React.createElement("input", {
+            type: "range",
+            min: 0,
+            max: duration > 0 ? duration : 100,
+            step: 0.1,
+            value: currentTime,
+            onChange: (e: any) => {
+              const target = parseFloat(e.target.value);
+              setCurrentTime(target);
+              if (audioRef.current) {
+                audioRef.current.currentTime = target;
+              }
+            },
+            style: {
+              width: "100%",
+              height: "6px",
+              cursor: "pointer",
+              accentColor: "#2563EB",
+              backgroundColor: "#0C0E12",
+              borderRadius: "3px",
+              outline: "none",
+              margin: "2px 0",
+            },
+          })
+        ) : (
           <Pressable style={playerStyles.progressTrack} onPress={handleSeek}>
             <View style={playerStyles.progressBg}>
               <View style={[playerStyles.progressFill, { width: `${(progress * 100).toFixed(2)}%` as any }]} />
               <View style={[playerStyles.progressThumb, { left: `${(progress * 100).toFixed(2)}%` as any }]} />
             </View>
           </Pressable>
+        )}
+      </View>
+
+      {/* Control Buttons Row */}
+      <View style={playerStyles.controlsRow}>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
+          {/* Tua lùi 10s */}
+          <Pressable
+            onPress={() => seekRelative(-10)}
+            style={({ pressed }) => [playerStyles.skipBtn, pressed && { opacity: 0.7 }]}
+            accessibilityLabel="Tua lùi 10 giây"
+          >
+            <Feather name="rotate-ccw" size={13} color="#94A3B8" />
+            <Text style={playerStyles.skipText}>-10s</Text>
+          </Pressable>
+
+          {/* Play / Pause */}
+          <Pressable
+            onPress={togglePlay}
+            style={({ pressed }) => [playerStyles.playBtn, pressed && { opacity: 0.8 }]}
+            accessibilityLabel={isPlaying ? "Tạm dừng" : "Phát"}
+          >
+            <Feather name={isPlaying ? "pause" : "play"} size={16} color="#FFFFFF" />
+          </Pressable>
+
+          {/* Tua tới 10s */}
+          <Pressable
+            onPress={() => seekRelative(10)}
+            style={({ pressed }) => [playerStyles.skipBtn, pressed && { opacity: 0.7 }]}
+            accessibilityLabel="Tua tới 10 giây"
+          >
+            <Feather name="rotate-cw" size={13} color="#94A3B8" />
+            <Text style={playerStyles.skipText}>+10s</Text>
+          </Pressable>
         </View>
 
-        <Pressable
-          onPress={cycleRate}
-          style={({ pressed }) => [playerStyles.rateBtn, pressed && { opacity: 0.8 }]}
-        >
-          <Text style={playerStyles.rateText}>{playbackRate.toFixed(2).replace(".00", ".0")}x</Text>
-        </Pressable>
+        <Text style={playerStyles.hintText}>Click mốc thời gian [MM:SS] trong bản gỡ băng để tua nhanh</Text>
       </View>
     </View>
   );
@@ -1060,38 +1137,40 @@ const playerStyles = StyleSheet.create({
     paddingHorizontal: 14,
     paddingVertical: 10,
     marginBottom: 12,
+    gap: 8,
   },
-  row: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 12,
-  },
-  playBtn: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: "#2563EB",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  infoCol: {
-    flex: 1,
-    gap: 6,
-  },
-  labelRow: {
+  headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
   title: {
-    color: "#CBD5E1",
-    fontSize: 11,
+    color: "#E2E8F0",
+    fontSize: 12,
     fontWeight: "600",
+  },
+  engineBadge: {
+    backgroundColor: "rgba(56, 189, 248, 0.12)",
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(56, 189, 248, 0.25)",
+  },
+  engineBadgeText: {
+    color: "#38BDF8",
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.4,
   },
   timeText: {
     color: "#94A3B8",
-    fontSize: 11,
+    fontSize: 12,
     fontVariant: ["tabular-nums"],
+    fontWeight: "600",
+  },
+  scrubberContainer: {
+    width: "100%",
   },
   progressTrack: {
     height: 16,
@@ -1118,11 +1197,45 @@ const playerStyles = StyleSheet.create({
     backgroundColor: "#60A5FA",
     marginLeft: -6,
   },
+  controlsRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  playBtn: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: "#2563EB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  skipBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  skipText: {
+    color: "#CBD5E1",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  hintText: {
+    color: "#64748B",
+    fontSize: 11,
+    fontStyle: "italic",
+  },
   rateBtn: {
     backgroundColor: "#111318",
     borderRadius: 6,
     paddingHorizontal: 8,
-    paddingVertical: 5,
+    paddingVertical: 3,
     borderWidth: 1,
     borderColor: "#262932",
   },
@@ -1259,6 +1372,7 @@ interface ResultDashboardProps {
   meetingId: number;
   meetingTitle: string;
   result: AIProcessingResult;
+  localAudioUrl?: string;
   activeTab: "minutes" | "tasks" | "transcript" | "copilot";
   onTabChange: (tab: "minutes" | "tasks" | "transcript" | "copilot") => void;
   fadeAnim: Animated.Value;
@@ -1270,6 +1384,7 @@ function ResultDashboard({
   meetingId,
   meetingTitle,
   result,
+  localAudioUrl = "",
   activeTab,
   onTabChange,
   fadeAnim,
@@ -1315,13 +1430,17 @@ function ResultDashboard({
   // Audio Player Seek Reference & Audio URL
   const seekToRef = useRef<((seconds: number) => void) | null>(null);
   const audioUrl = useMemo(() => {
-    if (!result.audio_file_url) return "";
-    if (result.audio_file_url.startsWith("http://") || result.audio_file_url.startsWith("https://")) {
-      return result.audio_file_url;
+    // 1. Ưu tiên URL cục bộ (0 độ trễ khi vừa chọn file hoặc vừa ghi âm)
+    if (localAudioUrl) return localAudioUrl;
+    // 2. Stream qua endpoint HTTP 206 Partial Content của Backend
+    if (result?.audio_file_url) {
+      if (result.audio_file_url.startsWith("http://") || result.audio_file_url.startsWith("https://")) {
+        return result.audio_file_url;
+      }
+      return `${BASE_URL}/api/v1/audio/${meetingId}/stream`;
     }
-    const cleanPath = result.audio_file_url.replace(/^\/+/, "");
-    return `${BASE_URL}/${cleanPath}`;
-  }, [result.audio_file_url]);
+    return "";
+  }, [localAudioUrl, result?.audio_file_url, meetingId]);
 
   // Task Sheet Copy State
   const [copiedTaskSheet, setCopiedTaskSheet] = useState(false);

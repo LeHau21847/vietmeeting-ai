@@ -27,12 +27,13 @@ from __future__ import annotations
 
 import logging
 import time
+import re
 import uuid
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, status
-from fastapi.responses import JSONResponse
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -155,6 +156,146 @@ async def get_meeting_progress(
         "meeting_id": meeting_id,
         **progress_data,
     })
+
+
+# ===========================================================================
+# Endpoint: GET /api/v1/audio/{meeting_id}/stream - HTTP 206 Partial Content
+# ===========================================================================
+@router.get(
+    "/audio/{meeting_id}/stream",
+    summary="Phát âm thanh cuộc họp hỗ trợ HTTP Range 206 Partial Content",
+    description=(
+        "Endpoint truyền phát âm thanh hỗ trợ tua mượt mà cho các file dung lượng lớn (>50MB). "
+        "Hỗ trợ header 'Range: bytes=start-end', trả về HTTP 206 Partial Content, Content-Range, "
+        "Accept-Ranges: bytes, Content-Length."
+    ),
+    tags=["Audio Streaming"],
+)
+async def stream_meeting_audio(
+    meeting_id: int,
+    request: Request,
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Truyền phát file âm thanh hỗ trợ tua tức thì và tiết kiệm băng thông.
+    Hỗ trợ chuẩn RFC 7233 HTTP Range Requests.
+    """
+    stmt = select(Meeting).where(Meeting.id == meeting_id)
+    result = await db.execute(stmt)
+    meeting = result.scalar_one_or_none()
+
+    if meeting is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "meeting_not_found", "message": f"Không tìm thấy cuộc họp ID={meeting_id}."},
+        )
+
+    # Tìm đường dẫn file âm thanh thực tế trên đĩa
+    file_path: Path | None = None
+    if meeting.audio_file_url:
+        cleaned_url = meeting.audio_file_url.lstrip("/")
+        candidate_paths = [
+            Path(cleaned_url),
+            Path(__file__).resolve().parent.parent.parent / cleaned_url,
+            UPLOAD_DIR / Path(cleaned_url).name,
+            Path("uploads") / cleaned_url.replace("uploads/", ""),
+        ]
+        for cp in candidate_paths:
+            if cp.is_file() and cp.stat().st_size > 0:
+                file_path = cp
+                break
+
+    # Nếu chưa tìm thấy, quét UPLOAD_DIR tìm file khớp meeting_{meeting_id}_
+    if not file_path:
+        for f in UPLOAD_DIR.glob(f"meeting_{meeting_id}_*.*"):
+            if f.is_file() and f.stat().st_size > 0:
+                file_path = f
+                break
+
+    # Fallback kiểm tra file demo nếu có
+    if not file_path:
+        demo_candidate = Path("demo.mp3")
+        if demo_candidate.is_file():
+            file_path = demo_candidate
+
+    if not file_path or not file_path.is_file():
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail={"error": "audio_not_found", "message": "Không tìm thấy tệp âm thanh trên máy chủ."},
+        )
+
+    file_size = file_path.stat().st_size
+    ext = file_path.suffix.lower()
+    mime_types = {
+        ".mp3": "audio/mpeg",
+        ".wav": "audio/wav",
+        ".m4a": "audio/mp4",
+        ".mp4": "audio/mp4",
+        ".ogg": "audio/ogg",
+        ".webm": "audio/webm",
+        ".flac": "audio/flac",
+        ".aac": "audio/aac",
+    }
+    content_type = mime_types.get(ext, "audio/mpeg")
+
+    range_header = request.headers.get("range")
+    if range_header:
+        # Xử lý Range request: bytes=start-end
+        range_match = re.match(r"bytes=(\d*)-(\d*)", range_header.strip())
+        if not range_match:
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                detail="Invalid Range header format",
+            )
+        start_str, end_str = range_match.groups()
+        start = int(start_str) if start_str else 0
+        end = int(end_str) if end_str else file_size - 1
+
+        if end >= file_size:
+            end = file_size - 1
+        if start > end or start >= file_size:
+            raise HTTPException(
+                status_code=status.HTTP_416_REQUESTED_RANGE_NOT_SATISFIABLE,
+                headers={"Content-Range": f"bytes */{file_size}"},
+                detail="Requested range not satisfiable",
+            )
+
+        chunk_size = end - start + 1
+
+        def iter_chunk():
+            with open(file_path, "rb") as f:
+                f.seek(start)
+                bytes_left = chunk_size
+                while bytes_left > 0:
+                    read_len = min(64 * 1024, bytes_left)
+                    data = f.read(read_len)
+                    if not data:
+                        break
+                    bytes_left -= len(data)
+                    yield data
+
+        headers = {
+            "Content-Range": f"bytes {start}-{end}/{file_size}",
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(chunk_size),
+            "Content-Type": content_type,
+            "Cache-Control": "public, max-age=3600",
+        }
+        return StreamingResponse(iter_chunk(), status_code=status.HTTP_206_PARTIAL_CONTENT, headers=headers)
+
+    # Không có Range header -> trả về full file kèm Accept-Ranges
+    def iter_full():
+        with open(file_path, "rb") as f:
+            while chunk := f.read(64 * 1024):
+                yield chunk
+
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(file_size),
+        "Content-Type": content_type,
+        "Cache-Control": "public, max-age=3600",
+    }
+    return StreamingResponse(iter_full(), status_code=status.HTTP_200_OK, headers=headers)
 
 
 # ===========================================================================
