@@ -184,6 +184,11 @@ app.include_router(tasks.router)
 # ===========================================================================
 WEB_DIST_DIR = Path(__file__).resolve().parent / "mobile" / "dist"
 
+# Mount thư mục uploads để frontend phát lại audio gốc qua HTTP
+UPLOADS_DIR = Path(__file__).resolve().parent / "uploads"
+UPLOADS_DIR.mkdir(parents=True, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=str(UPLOADS_DIR)), name="uploads_static")
+
 if WEB_DIST_DIR.exists() and (WEB_DIST_DIR / "index.html").exists():
     logger.info("🌐 Đã tìm thấy bản build giao diện Web tại %s. Kích hoạt Web Serving trên cổng 8000.", WEB_DIST_DIR)
 

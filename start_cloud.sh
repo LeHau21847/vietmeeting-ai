@@ -8,3 +8,4 @@ python seed_demo_data.py || true
 PORT="${PORT:-7860}"
 echo "[*] Starting VietMeeting AI Server on port $PORT..."
 exec uvicorn main:app --host 0.0.0.0 --port "$PORT"
+

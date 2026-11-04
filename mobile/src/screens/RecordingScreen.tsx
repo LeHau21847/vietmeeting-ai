@@ -109,6 +109,9 @@ export default function RecordingScreen(): React.JSX.Element {
   const [selectedFileName, setSelectedFileName] = useState<string>("");
   const [selectedFileSize, setSelectedFileSize] = useState<string>("");
 
+  // Ghi chú trọng tâm của Thư ký (Granola-style hybrid notes)
+  const [secretaryNotes, setSecretaryNotes] = useState<string>("");
+
   // Progress tracking
   const [progressData, setProgressData] = useState<ProgressData | null>(null);
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
@@ -392,6 +395,9 @@ export default function RecordingScreen(): React.JSX.Element {
           try {
             const formData = new FormData();
             formData.append("file", file, file.name);
+            if (secretaryNotes.trim()) {
+              formData.append("notes", secretaryNotes.trim());
+            }
             const endpoint = API_ENDPOINTS.processAudio(meetingId);
             const response = await axios.post<AIProcessingResult>(endpoint, formData, {
               timeout: API_TIMEOUT_MS,
@@ -433,6 +439,10 @@ export default function RecordingScreen(): React.JSX.Element {
           name: filename || "recording.wav",
           type: "audio/wav",
         } as unknown as Blob);
+      }
+
+      if (secretaryNotes.trim()) {
+        formData.append("notes", secretaryNotes.trim());
       }
 
       const endpoint = API_ENDPOINTS.processAudio(meetingId);
@@ -727,6 +737,49 @@ export default function RecordingScreen(): React.JSX.Element {
                   </View>
                 ) : null}
 
+                {/* Ghi chú trọng tâm của Thư ký (Granola-Style Hybrid Notes) */}
+                <View style={{
+                  width: "100%",
+                  marginTop: 12,
+                  marginBottom: 4,
+                  borderTopWidth: 1,
+                  borderTopColor: "#262932",
+                  paddingTop: 12,
+                }}>
+                  <View style={{ flexDirection: "row", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                    <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
+                      <Feather name="edit-2" size={12} color="#94A3B8" />
+                      <Text style={{ color: "#CBD5E1", fontSize: 11, fontWeight: "600" }}>Ghi chú trọng tâm</Text>
+                    </View>
+                    <Text style={{ color: "#64748B", fontSize: 10 }}>Tùy chọn</Text>
+                  </View>
+                  <TextInput
+                    value={secretaryNotes}
+                    onChangeText={setSecretaryNotes}
+                    multiline
+                    numberOfLines={3}
+                    placeholder="Gõ nhanh ý chính cần AI ưu tiên: chỉ đạo then chốt, mốc hạn quan trọng, phân công nhân sự..."
+                    placeholderTextColor="#475569"
+                    style={{
+                      backgroundColor: "#111318",
+                      borderWidth: 1,
+                      borderColor: "#262932",
+                      borderRadius: 6,
+                      padding: 8,
+                      color: "#CBD5E1",
+                      fontSize: 12,
+                      lineHeight: 18,
+                      minHeight: 68,
+                      textAlignVertical: "top",
+                    }}
+                  />
+                  {secretaryNotes.trim().length > 0 && (
+                    <Text style={{ color: "#64748B", fontSize: 10, marginTop: 4 }}>
+                      AI sẽ kết hợp ghi chú này với âm thanh để làm nổi bật kết luận.
+                    </Text>
+                  )}
+                </View>
+
                 {/* Specifications List */}
                 <View style={s.specBox}>
                   <View style={s.specItem}>
@@ -863,6 +916,222 @@ export default function RecordingScreen(): React.JSX.Element {
     </SafeAreaView>
   );
 }
+
+// ===========================================================================
+// SUB-COMPONENT: StudioAudioPlayer
+// ===========================================================================
+interface StudioAudioPlayerProps {
+  audioUrl: string;
+  seekToRef?: React.MutableRefObject<((seconds: number) => void) | null>;
+}
+
+function StudioAudioPlayer({ audioUrl, seekToRef }: StudioAudioPlayerProps): React.JSX.Element | null {
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [currentTime, setCurrentTime] = useState(0);
+  const [duration, setDuration] = useState(0);
+  const [playbackRate, setPlaybackRate] = useState(1.0);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || !audioUrl) return;
+    const audio = new window.Audio(audioUrl);
+    audioRef.current = audio;
+    audio.playbackRate = playbackRate;
+
+    const onTime = () => setCurrentTime(audio.currentTime);
+    const onMeta = () => setDuration(audio.duration || 0);
+    const onEnd = () => setIsPlaying(false);
+    const onErr = () => setIsPlaying(false);
+
+    audio.addEventListener("timeupdate", onTime);
+    audio.addEventListener("loadedmetadata", onMeta);
+    audio.addEventListener("ended", onEnd);
+    audio.addEventListener("error", onErr);
+
+    return () => {
+      audio.pause();
+      audio.removeEventListener("timeupdate", onTime);
+      audio.removeEventListener("loadedmetadata", onMeta);
+      audio.removeEventListener("ended", onEnd);
+      audio.removeEventListener("error", onErr);
+      audioRef.current = null;
+    };
+  }, [audioUrl]);
+
+  useEffect(() => {
+    if (seekToRef) {
+      seekToRef.current = (seconds: number) => {
+        if (audioRef.current) {
+          audioRef.current.currentTime = Math.max(0, Math.min(seconds, audioRef.current.duration || seconds));
+          audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+        }
+      };
+    }
+  }, [seekToRef]);
+
+  const togglePlay = () => {
+    if (!audioRef.current) return;
+    if (isPlaying) {
+      audioRef.current.pause();
+      setIsPlaying(false);
+    } else {
+      audioRef.current.play().then(() => setIsPlaying(true)).catch(() => {});
+    }
+  };
+
+  const handleSeek = (e: any) => {
+    if (!audioRef.current || !duration) return;
+    try {
+      const rect = e.currentTarget.getBoundingClientRect();
+      const x = (e.clientX ?? (e.nativeEvent as any).clientX) - rect.left;
+      const ratio = Math.max(0, Math.min(1, x / rect.width));
+      const targetTime = ratio * duration;
+      audioRef.current.currentTime = targetTime;
+      setCurrentTime(targetTime);
+    } catch {}
+  };
+
+  const cycleRate = () => {
+    const rates = [1.0, 1.25, 1.5, 2.0];
+    const nextRate = rates[(rates.indexOf(playbackRate) + 1) % rates.length];
+    setPlaybackRate(nextRate);
+    if (audioRef.current) {
+      audioRef.current.playbackRate = nextRate;
+    }
+  };
+
+  const fmt = (s: number) => {
+    if (!s || isNaN(s)) return "00:00";
+    const m = Math.floor(s / 60);
+    const sec = Math.floor(s % 60);
+    return `${String(m).padStart(2, "0")}:${String(sec).padStart(2, "0")}`;
+  };
+
+  if (Platform.OS !== "web" || !audioUrl) return null;
+
+  const progress = duration > 0 ? Math.min(1, Math.max(0, currentTime / duration)) : 0;
+
+  return (
+    <View style={playerStyles.container}>
+      <View style={playerStyles.row}>
+        <Pressable
+          onPress={togglePlay}
+          style={({ pressed }) => [playerStyles.playBtn, pressed && { opacity: 0.8 }]}
+        >
+          <Feather name={isPlaying ? "pause" : "play"} size={15} color="#FFFFFF" />
+        </Pressable>
+
+        <View style={playerStyles.infoCol}>
+          <View style={playerStyles.labelRow}>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+              <Feather name="volume-2" size={11} color="#60A5FA" />
+              <Text style={playerStyles.title}>Trình phát âm thanh gốc (Studio Audio Player)</Text>
+            </View>
+            <Text style={playerStyles.timeText}>
+              {fmt(currentTime)} / {fmt(duration)}
+            </Text>
+          </View>
+
+          <Pressable style={playerStyles.progressTrack} onPress={handleSeek}>
+            <View style={playerStyles.progressBg}>
+              <View style={[playerStyles.progressFill, { width: `${(progress * 100).toFixed(2)}%` as any }]} />
+              <View style={[playerStyles.progressThumb, { left: `${(progress * 100).toFixed(2)}%` as any }]} />
+            </View>
+          </Pressable>
+        </View>
+
+        <Pressable
+          onPress={cycleRate}
+          style={({ pressed }) => [playerStyles.rateBtn, pressed && { opacity: 0.8 }]}
+        >
+          <Text style={playerStyles.rateText}>{playbackRate.toFixed(2).replace(".00", ".0")}x</Text>
+        </Pressable>
+      </View>
+    </View>
+  );
+}
+
+const playerStyles = StyleSheet.create({
+  container: {
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    marginBottom: 12,
+  },
+  row: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  playBtn: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: "#2563EB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  infoCol: {
+    flex: 1,
+    gap: 6,
+  },
+  labelRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+  },
+  title: {
+    color: "#CBD5E1",
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  timeText: {
+    color: "#94A3B8",
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
+  },
+  progressTrack: {
+    height: 16,
+    justifyContent: "center",
+  },
+  progressBg: {
+    height: 5,
+    backgroundColor: "#0C0E12",
+    borderRadius: 3,
+    position: "relative",
+    overflow: "visible",
+  },
+  progressFill: {
+    height: 5,
+    backgroundColor: "#2563EB",
+    borderRadius: 3,
+  },
+  progressThumb: {
+    position: "absolute",
+    top: -3.5,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
+    backgroundColor: "#60A5FA",
+    marginLeft: -6,
+  },
+  rateBtn: {
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 5,
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  rateText: {
+    color: "#60A5FA",
+    fontSize: 11,
+    fontWeight: "700",
+  },
+});
 
 // ===========================================================================
 // SUB-COMPONENT: WaveBar (Waveform animation bar)
@@ -1039,6 +1308,23 @@ function ResultDashboard({
   const [copilotAnswer, setCopilotAnswer] = useState<string | null>(null);
   const [copilotEngine, setCopilotEngine] = useState<string | null>(null);
   const [copilotCopied, setCopilotCopied] = useState(false);
+
+  // Chế độ loại văn bản hành chính: "minutes" (Biên bản cuộc họp) | "notice" (Thông báo kết luận)
+  const [docMode, setDocMode] = useState<"minutes" | "notice">("minutes");
+
+  // Audio Player Seek Reference & Audio URL
+  const seekToRef = useRef<((seconds: number) => void) | null>(null);
+  const audioUrl = useMemo(() => {
+    if (!result.audio_file_url) return "";
+    if (result.audio_file_url.startsWith("http://") || result.audio_file_url.startsWith("https://")) {
+      return result.audio_file_url;
+    }
+    const cleanPath = result.audio_file_url.replace(/^\/+/, "");
+    return `${BASE_URL}/${cleanPath}`;
+  }, [result.audio_file_url]);
+
+  // Task Sheet Copy State
+  const [copiedTaskSheet, setCopiedTaskSheet] = useState(false);
 
   const COPILOT_QUICK_PROMPTS = [
     "Tóm tắt 3 kết luận quan trọng nhất của cuộc họp?",
@@ -1526,7 +1812,7 @@ function ResultDashboard({
     <tr>
       <td style="width: 45%;">
         <div class="org-name">VIETMEETING AI WORKSPACE</div>
-        <div class="doc-no">Số: ${String(meetingId).padStart(4, "0")}/BB-CH</div>
+        <div class="doc-no">Số: ${String(meetingId).padStart(4, "0")}/${docMode === "notice" ? "TB-CH" : "BB-CH"}</div>
       </td>
       <td style="width: 55%;">
         <div class="nation-name">CỘNG HÒA XÃ HỘI CHỦ NGHĨA VIỆT NAM</div>
@@ -1538,20 +1824,21 @@ function ResultDashboard({
 
   <div class="date-line">Hà Nội, ${docDate}</div>
 
-  <div class="title-main">BIÊN BẢN CUỘC HỌP</div>
-  <div class="title-sub">${docTitle}</div>
+  <div class="title-main">${docMode === "notice" ? "THÔNG BÁO" : "BIÊN BẢN CUỘC HỌP"}</div>
+  <div class="title-sub">${docMode === "notice" ? `Kết luận của ${docChair} tại cuộc họp "${docTitle}"` : docTitle}</div>
 
   <div class="section-head">I. THÔNG TIN CHUNG</div>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>1. Thời gian:</b> ${docTime}.</p>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>2. Địa điểm / Hình thức:</b> ${docLocation}.</p>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>3. Chủ trì cuộc họp:</b> ${docChair}.</p>
-  <p style="text-indent: 1.25cm; margin: 4px 0;"><b>4. Thư ký ghi biên bản:</b> ${docSecretary}.</p>
-  <p style="text-indent: 1.25cm; margin: 4px 0;"><b>5. Thành phần tham dự:</b> ${docAttendees}.</p>
+  ${docMode === "minutes" ? `<p style="text-indent: 1.25cm; margin: 4px 0;"><b>4. Thư ký ghi biên bản:</b> ${docSecretary}.</p>` : ""}
+  <p style="text-indent: 1.25cm; margin: 4px 0;"><b>${docMode === "minutes" ? "5" : "4"}. Thành phần tham dự:</b> ${docAttendees}.</p>
+  ${docMode === "notice" ? `<p style="text-indent: 1.25cm; margin: 8px 0;">Sau khi nghe báo cáo và các ý kiến phát biểu tại cuộc họp, đồng chí <b>${docChair}</b> đã kết luận và chỉ đạo các nội dung trọng tâm như sau:</p>` : ""}
 
-  <div class="section-head">II. NỘI DUNG DIỄN BIẾN CUỘC HỌP</div>
+  <div class="section-head">${docMode === "notice" ? "II. NỘI DUNG KẾT LUẬN VÀ CHỈ ĐẠO" : "II. NỘI DUNG DIỄN BIẾN CUỘC HỌP"}</div>
   ${minutesParagraphs}
 
-  <div class="section-head">III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO</div>
+  <div class="section-head">${docMode === "notice" ? "III. PHÂN CÔNG TỔ CHỨC THỰC HIỆN" : "III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO"}</div>
   <table class="data-table">
     <thead>
       <tr>
@@ -1568,6 +1855,21 @@ function ResultDashboard({
 
   <table class="sig-table">
     <tr>
+      ${docMode === "notice" ? `
+      <td style="text-align: left; vertical-align: top; padding-left: 15px;">
+        <div class="sig-note"><b><i>Nơi nhận:</i></b></div>
+        <div class="sig-note">- Như thành phần tham dự;</div>
+        <div class="sig-note">- Lãnh đạo cơ quan;</div>
+        <div class="sig-note">- Lưu: VT, TH.</div>
+      </td>
+      <td>
+        <div class="sig-role">NGƯỜI CHỦ TRÌ</div>
+        <div class="sig-note">(Ký và ghi rõ họ tên)</div>
+        <div class="sig-space"></div>
+        <div><i>(Đã duyệt & ký)</i></div>
+        <div style="font-weight: bold; margin-top: 4px;">${docChair}</div>
+      </td>
+      ` : `
       <td>
         <div class="sig-role">THƯ KÝ GHI BIÊN BẢN</div>
         <div class="sig-note">(Ký và ghi rõ họ tên)</div>
@@ -1580,6 +1882,7 @@ function ResultDashboard({
         <div class="sig-space"></div>
         <div><i>(Đã duyệt & ký)</i></div>
       </td>
+      `}
     </tr>
   </table>
 
@@ -1590,7 +1893,7 @@ function ResultDashboard({
   const handleDownloadWord = () => {
     const htmlContent = generateWordHtml();
     const safeTitle = docTitle.replace(/[^\w\s-]/g, "").trim().replace(/\s+/g, "_").slice(0, 30) || String(meetingId);
-    const fileName = `Bien_Ban_Cuoc_Hop_${safeTitle}.doc`;
+    const fileName = docMode === "notice" ? `Thong_Bao_Ket_Luan_${safeTitle}.doc` : `Bien_Ban_Cuoc_Hop_${safeTitle}.doc`;
     const exportDocUrl = `${BASE_URL}/api/v1/meetings/${meetingId}/export-doc?font_family=${encodeURIComponent(fontFamily)}&font_size=${fontSize}&line_height=${lineHeight}&text_align=${textAlign}`;
 
     if (Platform.OS === "web") {
@@ -1936,6 +2239,55 @@ function ResultDashboard({
       {activeTab === "minutes" && (
         <View style={{ gap: 12 }}>
 
+          {/* Studio Audio Player */}
+          {audioUrl ? <StudioAudioPlayer audioUrl={audioUrl} seekToRef={seekToRef} /> : null}
+
+          {/* Bộ chuyển đổi loại văn bản hành chính theo Nghị định 30 */}
+          <View style={{
+            flexDirection: "row",
+            backgroundColor: "#161920",
+            borderRadius: 8,
+            borderWidth: 1,
+            borderColor: "#262932",
+            padding: 4,
+            gap: 6,
+          }}>
+            {[
+              { id: "minutes" as const, label: "Biên bản cuộc họp", sub: "Thể thức chuẩn Nghị định 30", icon: "file-text" as const },
+              { id: "notice" as const, label: "Thông báo kết luận", sub: "Chỉ đạo & phân công giao việc", icon: "bell" as const },
+            ].map((mode) => {
+              const isActive = docMode === mode.id;
+              return (
+                <Pressable
+                  key={mode.id}
+                  onPress={() => setDocMode(mode.id)}
+                  style={({ pressed }) => [{
+                    flex: 1,
+                    flexDirection: "row",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 8,
+                    paddingVertical: 8,
+                    paddingHorizontal: 12,
+                    borderRadius: 6,
+                    backgroundColor: isActive ? "#2563EB" : "transparent",
+                    opacity: pressed ? 0.8 : 1,
+                  }]}
+                >
+                  <Feather name={mode.icon} size={14} color={isActive ? "#FFFFFF" : "#64748B"} />
+                  <View>
+                    <Text style={{ color: isActive ? "#FFFFFF" : "#CBD5E1", fontSize: 12, fontWeight: isActive ? "700" : "500" }}>
+                      {mode.label}
+                    </Text>
+                    <Text style={{ color: isActive ? "rgba(255,255,255,0.8)" : "#64748B", fontSize: 10 }}>
+                      {mode.sub}
+                    </Text>
+                  </View>
+                </Pressable>
+              );
+            })}
+          </View>
+
           {/* AI Style Switcher */}
           {renderAITextStudio()}
 
@@ -2087,7 +2439,7 @@ function ResultDashboard({
                   VIETMEETING AI WORKSPACE
                 </Text>
                 <Text style={[resStyles.paperDocNo, { color: themeColors.textMuted, fontFamily }]}>
-                  Số: {String(meetingId).padStart(4, "0")}/BB-CH
+                  Số: {String(meetingId).padStart(4, "0")}/{docMode === "notice" ? "TB-CH" : "BB-CH"}
                 </Text>
               </View>
               <View style={resStyles.paperHeaderRight}>
@@ -2123,7 +2475,9 @@ function ResultDashboard({
 
             {/* Main Title */}
             <View style={resStyles.paperTitleBox}>
-              <Text style={[resStyles.paperMainTitle, { color: themeColors.text, fontFamily }]}>BIÊN BẢN CUỘC HỌP</Text>
+              <Text style={[resStyles.paperMainTitle, { color: themeColors.text, fontFamily }]}>
+                {docMode === "notice" ? "THÔNG BÁO" : "BIÊN BẢN CUỘC HỌP"}
+              </Text>
               {isEditing ? (
                 <TextInput
                   value={docTitle}
@@ -2138,7 +2492,9 @@ function ResultDashboard({
                 />
               ) : (
                 <Text style={[resStyles.paperSubTitle, { color: themeColors.textMuted, fontFamily }]}>
-                  Về việc: {docTitle}
+                  {docMode === "notice"
+                    ? `Kết luận của ${docChair} tại cuộc họp "${docTitle}"`
+                    : `Về việc: ${docTitle}`}
                 </Text>
               )}
             </View>
@@ -2188,21 +2544,25 @@ function ResultDashboard({
                 )}
               </View>
 
-              <View style={resStyles.infoRow}>
-                <Text style={[resStyles.infoLabel, { color: themeColors.text, fontFamily }]}>4. Thư ký ghi biên bản:</Text>
-                {isEditing ? (
-                  <TextInput
-                    value={docSecretary}
-                    onChangeText={setDocSecretary}
-                    style={[resStyles.infoInput, { backgroundColor: themeColors.inputBg, color: themeColors.text, fontFamily }]}
-                  />
-                ) : (
-                  <Text style={[resStyles.infoVal, { color: themeColors.text, fontFamily, fontSize }]}>{docSecretary}</Text>
-                )}
-              </View>
+              {docMode === "minutes" && (
+                <View style={resStyles.infoRow}>
+                  <Text style={[resStyles.infoLabel, { color: themeColors.text, fontFamily }]}>4. Thư ký ghi biên bản:</Text>
+                  {isEditing ? (
+                    <TextInput
+                      value={docSecretary}
+                      onChangeText={setDocSecretary}
+                      style={[resStyles.infoInput, { backgroundColor: themeColors.inputBg, color: themeColors.text, fontFamily }]}
+                    />
+                  ) : (
+                    <Text style={[resStyles.infoVal, { color: themeColors.text, fontFamily, fontSize }]}>{docSecretary}</Text>
+                  )}
+                </View>
+              )}
 
               <View style={resStyles.infoRow}>
-                <Text style={[resStyles.infoLabel, { color: themeColors.text, fontFamily }]}>5. Thành phần tham dự:</Text>
+                <Text style={[resStyles.infoLabel, { color: themeColors.text, fontFamily }]}>
+                  {docMode === "minutes" ? "5" : "4"}. Thành phần tham dự:
+                </Text>
                 {isEditing ? (
                   <TextInput
                     value={docAttendees}
@@ -2213,12 +2573,18 @@ function ResultDashboard({
                   <Text style={[resStyles.infoVal, { color: themeColors.text, fontFamily, fontSize }]}>{docAttendees}</Text>
                 )}
               </View>
+
+              {docMode === "notice" && (
+                <Text style={[resStyles.paperNormalText, { color: themeColors.text, fontFamily, fontSize, marginTop: 8, fontStyle: "italic" }]}>
+                  Sau khi nghe báo cáo tổng hợp và các ý kiến phát biểu tại cuộc họp, đồng chí <b>{docChair}</b> đã kết luận và chỉ đạo các nội dung trọng tâm như sau:
+                </Text>
+              )}
             </View>
 
             {/* MỤC II: NỘI DUNG DIỄN BIẾN CUỘC HỌP */}
             <View style={resStyles.docSection}>
               <Text style={[resStyles.docSectionHead, { color: themeColors.text, borderBottomColor: themeColors.headBorder, fontFamily }]}>
-                II. NỘI DUNG DIỄN BIẾN CUỘC HỌP
+                {docMode === "notice" ? "II. NỘI DUNG KẾT LUẬN VÀ CHỈ ĐẠO" : "II. NỘI DUNG DIỄN BIẾN CUỘC HỌP"}
               </Text>
 
               {isEditing ? (
@@ -2326,7 +2692,7 @@ function ResultDashboard({
             {/* MỤC III: BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO */}
             <View style={resStyles.docSection}>
               <Text style={[resStyles.docSectionHead, { color: themeColors.text, borderBottomColor: themeColors.headBorder, fontFamily }]}>
-                III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO
+                {docMode === "notice" ? "III. PHÂN CÔNG TỔ CHỨC THỰC HIỆN" : "III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO"}
               </Text>
 
               <View style={[resStyles.tableWrapper, { borderColor: themeColors.tableBorder }]}>
@@ -2374,18 +2740,29 @@ function ResultDashboard({
               </View>
             </View>
 
-            {/* Phần Chữ ký 2 cột */}
+            {/* Phần Chữ ký */}
             <View style={[resStyles.sigContainer, { borderTopColor: themeColors.border }]}>
-              <View style={resStyles.sigCol}>
-                <Text style={[resStyles.sigRole, { color: themeColors.text, fontFamily }]}>THƯ KÝ GHI BIÊN BẢN</Text>
-                <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>(Ký và ghi rõ họ tên)</Text>
-                <View style={resStyles.sigSpace} />
-                <Text style={[resStyles.sigSigned, { fontFamily }]}><i>(Đã ký xác nhận)</i></Text>
-                <Text style={[resStyles.sigName, { color: themeColors.text, fontFamily }]}>{docSecretary}</Text>
-              </View>
+              {docMode === "notice" ? (
+                <View style={[resStyles.sigCol, { alignItems: "flex-start", paddingLeft: 16 }]}>
+                  <Text style={[resStyles.sigNote, { color: themeColors.text, fontFamily, fontWeight: "700" }]}>Nơi nhận:</Text>
+                  <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily, marginTop: 4 }]}>- Như thành phần tham dự;</Text>
+                  <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>- Lãnh đạo cơ quan;</Text>
+                  <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>- Lưu: VT, TH.</Text>
+                </View>
+              ) : (
+                <View style={resStyles.sigCol}>
+                  <Text style={[resStyles.sigRole, { color: themeColors.text, fontFamily }]}>THƯ KÝ GHI BIÊN BẢN</Text>
+                  <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>(Ký và ghi rõ họ tên)</Text>
+                  <View style={resStyles.sigSpace} />
+                  <Text style={[resStyles.sigSigned, { fontFamily }]}><i>(Đã ký xác nhận)</i></Text>
+                  <Text style={[resStyles.sigName, { color: themeColors.text, fontFamily }]}>{docSecretary}</Text>
+                </View>
+              )}
 
               <View style={resStyles.sigCol}>
-                <Text style={[resStyles.sigRole, { color: themeColors.text, fontFamily }]}>CHỦ TRÌ CUỘC HỌP</Text>
+                <Text style={[resStyles.sigRole, { color: themeColors.text, fontFamily }]}>
+                  {docMode === "notice" ? "NGƯỜI CHỦ TRÌ" : "CHỦ TRÌ CUỘC HỌP"}
+                </Text>
                 <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>(Ký và ghi rõ họ tên)</Text>
                 <View style={resStyles.sigSpace} />
                 <Text style={[resStyles.sigSigned, { fontFamily }]}><i>(Đã duyệt & ký)</i></Text>
@@ -2407,9 +2784,61 @@ function ResultDashboard({
               <Feather name="check-square" size={16} color="#2563EB" />
               <Text style={resStyles.cardHeaderTitle}>Bảng theo dõi & Phân công nhiệm vụ</Text>
             </View>
-            <Text style={resStyles.taskProgress}>
-              Hoàn thành {completedTasksCount}/{tasks.length}
-            </Text>
+            <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+              <Text style={resStyles.taskProgress}>
+                Hoàn thành {completedTasksCount}/{tasks.length}
+              </Text>
+
+              {tasks.length > 0 && (
+                <Pressable
+                  onPress={async () => {
+                    const header = `PHIẾU GIAO VIỆC & KẾT LUẬN CHỈ ĐẠO\n` +
+                      `Cuộc họp: ${meetingTitle}\n` +
+                      `Thời gian: ${docTime}\n` +
+                      `Người chủ trì: ${docChair}\n` +
+                      `──────────────────────────────────────────────────\n`;
+                    const body = tasks.map((t, i) => {
+                      const st = t.isDone ? "[x] ĐÃ HOÀN THÀNH" : "[ ] ĐANG THỰC HIỆN";
+                      const title = `${i + 1}. ${st} - ${t.title}`;
+                      const who = t.assignee_name ? `\n   Phụ trách: ${t.assignee_name}` : "\n   Phụ trách: Các đơn vị liên quan";
+                      const due = t.due_date ? ` | Hạn: ${t.due_date}` : "";
+                      const desc = t.description ? `\n   Nội dung: ${t.description}` : "";
+                      return `${title}${who}${due}${desc}`;
+                    }).join("\n\n");
+                    const footer = `\n──────────────────────────────────────────────────\n` +
+                      `Tổng số: ${tasks.length} nhiệm vụ (Đã hoàn tất: ${completedTasksCount}/${tasks.length})\n` +
+                      `Trích xuất từ Hệ thống Trợ lý cuộc họp VietMeeting AI`;
+                    const text = header + body + footer;
+
+                    if (Platform.OS === "web") {
+                      try {
+                        await navigator.clipboard.writeText(text);
+                      } catch {
+                        Clipboard.setString(text);
+                      }
+                    } else {
+                      Clipboard.setString(text);
+                    }
+                    setCopiedTaskSheet(true);
+                    setTimeout(() => setCopiedTaskSheet(false), 2200);
+                  }}
+                  style={({ pressed }) => [
+                    resStyles.copyBtn,
+                    copiedTaskSheet && { backgroundColor: "rgba(16,185,129,0.15)", borderColor: "#10B981" },
+                    pressed && resStyles.btnPressed,
+                  ]}
+                >
+                  <Feather
+                    name={copiedTaskSheet ? "check" : "share-2"}
+                    size={13}
+                    color={copiedTaskSheet ? "#10B981" : "#60A5FA"}
+                  />
+                  <Text style={[resStyles.copyBtnText, { color: copiedTaskSheet ? "#10B981" : "#60A5FA" }]}>
+                    {copiedTaskSheet ? "Đã chép phiếu" : "Sao chép phiếu giao việc"}
+                  </Text>
+                </Pressable>
+              )}
+            </View>
           </View>
 
           {tasks.length === 0 ? (
@@ -2468,6 +2897,9 @@ function ResultDashboard({
       ===================================================================== */}
       {activeTab === "transcript" && (
         <View style={{ gap: 12 }}>
+          {/* Studio Audio Player */}
+          {audioUrl ? <StudioAudioPlayer audioUrl={audioUrl} seekToRef={seekToRef} /> : null}
+
           {renderTypographyToolbar()}
 
           <View style={resStyles.card}>
@@ -2588,21 +3020,79 @@ function ResultDashboard({
                   {(() => {
                     const fullText = transcriptContent || "Không có nội dung bóc băng.";
                     if (!transcriptSearch.trim()) {
+                      const lines = fullText.split("\n");
                       return (
-                        <Text
-                          style={[
-                            resStyles.transcriptText,
-                            {
-                              color: themeColors.text,
-                              fontFamily,
-                              fontSize,
-                              lineHeight: Math.round(fontSize * lineHeight * 1.3),
-                              textAlign,
-                            },
-                          ]}
-                        >
-                          {fullText}
-                        </Text>
+                        <View style={{ gap: 6 }}>
+                          {lines.map((line, lIdx) => {
+                            const trimmed = line.trim();
+                            if (!trimmed) return null;
+                            const match = trimmed.match(/^\[(?:(\d{1,2}):)?(\d{1,2}):(\d{2})\]/);
+                            if (match) {
+                              const rawTs = match[0];
+                              const h = match[1] ? parseInt(match[1], 10) : 0;
+                              const m = parseInt(match[2], 10);
+                              const sec = parseInt(match[3], 10);
+                              const totalSec = h * 3600 + m * 60 + sec;
+                              const rest = trimmed.slice(rawTs.length).trim();
+                              return (
+                                <View key={lIdx} style={{ flexDirection: "row", alignItems: "flex-start", flexWrap: "wrap", marginVertical: 2 }}>
+                                  <Pressable
+                                    onPress={() => seekToRef.current?.(totalSec)}
+                                    style={({ pressed }) => [{
+                                      flexDirection: "row",
+                                      alignItems: "center",
+                                      gap: 4,
+                                      backgroundColor: pressed ? "rgba(37,99,235,0.25)" : "rgba(37,99,235,0.12)",
+                                      borderColor: "rgba(37,99,235,0.3)",
+                                      borderWidth: 1,
+                                      borderRadius: 4,
+                                      paddingHorizontal: 6,
+                                      paddingVertical: 2,
+                                      marginRight: 8,
+                                      marginTop: 2,
+                                    }]}
+                                  >
+                                    <Feather name="play-circle" size={11} color="#60A5FA" />
+                                    <Text style={{ color: "#60A5FA", fontSize: 11, fontWeight: "700", fontVariant: ["tabular-nums"] }}>
+                                      {rawTs}
+                                    </Text>
+                                  </Pressable>
+                                  <Text
+                                    style={[
+                                      resStyles.transcriptText,
+                                      {
+                                        color: themeColors.text,
+                                        fontFamily,
+                                        fontSize,
+                                        lineHeight: Math.round(fontSize * lineHeight * 1.3),
+                                        flex: 1,
+                                      },
+                                    ]}
+                                  >
+                                    {rest}
+                                  </Text>
+                                </View>
+                              );
+                            }
+                            return (
+                              <Text
+                                key={lIdx}
+                                style={[
+                                  resStyles.transcriptText,
+                                  {
+                                    color: themeColors.text,
+                                    fontFamily,
+                                    fontSize,
+                                    lineHeight: Math.round(fontSize * lineHeight * 1.3),
+                                    textAlign,
+                                  },
+                                ]}
+                              >
+                                {line}
+                              </Text>
+                            );
+                          })}
+                        </View>
                       );
                     }
 
