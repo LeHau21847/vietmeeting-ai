@@ -42,7 +42,11 @@ function resolveBackendBaseUrl(): string {
           }
         }
         // 2. Nếu đang chạy trên Expo Dev Server (port 8081)
-        const host = hostname || "localhost";
+        // Ép dùng 127.0.0.1 khi hostname là localhost để tránh Windows IPv6 (::1) connection refused
+        const host =
+          hostname === "localhost" || hostname === "127.0.0.1" || !hostname
+            ? "127.0.0.1"
+            : hostname;
         return `http://${host}:${BACKEND_PORT}`;
       }
     } catch {

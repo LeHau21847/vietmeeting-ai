@@ -54,7 +54,13 @@ if sys.platform == "win32":
         pass
 
 import httpx
-import ollama
+
+try:
+    import ollama
+    HAS_LOCAL_OLLAMA = True
+except ImportError:
+    ollama = None
+    HAS_LOCAL_OLLAMA = False
 
 # ---------------------------------------------------------------------------
 # Logger
@@ -743,7 +749,11 @@ def _get_whisper_model(force_cpu: bool = False, model_size_override: str | None 
     if not force_cpu and _whisper_model_instance is not None and not _is_cpu_fallback:
         return _whisper_model_instance
 
-    from faster_whisper import WhisperModel
+    try:
+        from faster_whisper import WhisperModel
+    except ImportError:
+        logger.warning("⚠️ faster-whisper chưa được cài đặt (Môi trường Cloud). Tự động dùng Google Gemini API.")
+        raise RuntimeError("faster-whisper is not installed in cloud lightweight mode.")
 
     model_candidates = [model_size_override] if model_size_override else [WHISPER_MODEL_PRIMARY, WHISPER_MODEL_FALLBACK]
 
@@ -1017,6 +1027,8 @@ def _call_ollama_raw(
     temperature: float = 0.1,
 ) -> str:
     """Gọi Ollama chat API Plain Text với num_ctx=4096."""
+    if ollama is None:
+        raise RuntimeError("Ollama không khả dụng trong môi trường Cloud.")
     response = ollama.chat(
         model=OLLAMA_MODEL,
         messages=[
@@ -1040,6 +1052,8 @@ def _call_ollama_json(
     temperature: float = 0.1,
 ) -> str:
     """Gọi Ollama chat API JSON với num_ctx=4096."""
+    if ollama is None:
+        raise RuntimeError("Ollama không khả dụng trong môi trường Cloud.")
     response = ollama.chat(
         model=OLLAMA_MODEL,
         messages=[
@@ -1749,7 +1763,7 @@ Hãy trả lời câu hỏi trên một cách chính xác, mạch lạc và bám
         except Exception as gemini_err:
             logger.warning("⚠️ [Copilot Q&A] Gemini API lỗi (%s). Chuyển sang Local AI...", gemini_err)
 
-    if not answer_text:
+    if not answer_text and ollama is not None:
         try:
             logger.info("💻 [Copilot Q&A] Đang truy vấn qua Local Ollama (%s)...", OLLAMA_MODEL)
             loop = asyncio.get_running_loop()

@@ -1,0 +1,25 @@
+# ==============================================================================
+# VietMeeting AI - Cloud Deployment Requirements (24/7)
+# Optimized for: Render.com / Hugging Face Spaces / Railway / Fly.io
+# Build time: < 60s (Zero heavy GPU/Cuda libraries)
+# ==============================================================================
+
+# --- Web Framework & Server ---
+fastapi==0.111.0
+uvicorn[standard]==0.30.1
+
+# --- Database (Async SQLite via aiosqlite) ---
+sqlalchemy==2.0.30
+aiosqlite==0.20.0
+
+# --- Pydantic Validation & Settings ---
+pydantic==2.7.1
+pydantic-settings==2.3.0
+python-dotenv==1.0.1
+
+# --- File Upload & Async File I/O ---
+python-multipart==0.0.9
+aiofiles==23.2.1
+
+# --- Cloud AI Engine (Google Gemini Multimodal Audio & Text) ---
+httpx>=0.27.0

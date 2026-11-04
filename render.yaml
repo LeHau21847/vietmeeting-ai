@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: vietmeeting-ai
+    env: python
+    plan: free
+    region: singapore
+    buildCommand: pip install -r requirements-cloud.txt && python seed_demo_data.py
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.0
+      - key: PREFERRED_AI_ENGINE
+        value: gemini
+      - key: GEMINI_API_KEY
+        sync: false
