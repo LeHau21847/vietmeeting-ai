@@ -176,21 +176,32 @@ def seed():
     print("🚀 BẮT ĐẦU ĐỒNG BỘ VÀ NẠP DỮ LIỆU MẪU VIETMEETING AI")
     print("=" * 65)
 
+    # Đảm bảo schema cơ sở dữ liệu đã được khởi tạo
+    try:
+        import asyncio
+        from app.core.database import init_db
+        asyncio.run(init_db())
+    except Exception as e:
+        print(f"⚠️ Khởi tạo schema (init_db): {e}")
+
     conn = sqlite3.connect(DB_PATH)
     cur = conn.cursor()
 
     # Bước 1: Chuẩn hóa toàn bộ Enum trong DB theo đúng định nghĩa SQLAlchemy Enum Name (UPPERCASE)
     print("🔧 Chuẩn hóa các giá trị Enum trong SQLite về chuẩn SQLAlchemy Enum Names...")
-    cur.execute("UPDATE meetings SET status = 'COMPLETED' WHERE LOWER(status) = 'completed' OR status = 'COMPLETED'")
-    cur.execute("UPDATE meetings SET status = 'CREATED' WHERE LOWER(status) = 'created' OR status = 'CREATED'")
-    cur.execute("UPDATE meetings SET status = 'PROCESSING' WHERE LOWER(status) = 'processing' OR status = 'PROCESSING'")
-    cur.execute("UPDATE meetings SET status = 'FAILED' WHERE LOWER(status) = 'failed' OR status = 'FAILED'")
+    try:
+        cur.execute("UPDATE meetings SET status = 'COMPLETED' WHERE LOWER(status) = 'completed' OR status = 'COMPLETED'")
+        cur.execute("UPDATE meetings SET status = 'CREATED' WHERE LOWER(status) = 'created' OR status = 'CREATED'")
+        cur.execute("UPDATE meetings SET status = 'PROCESSING' WHERE LOWER(status) = 'processing' OR status = 'PROCESSING'")
+        cur.execute("UPDATE meetings SET status = 'FAILED' WHERE LOWER(status) = 'failed' OR status = 'FAILED'")
 
-    cur.execute("UPDATE tasks SET status = 'PENDING' WHERE LOWER(status) = 'pending' OR status = 'PENDING'")
-    cur.execute("UPDATE tasks SET status = 'IN_PROGRESS' WHERE LOWER(status) = 'in_progress' OR status = 'IN_PROGRESS'")
-    cur.execute("UPDATE tasks SET status = 'DONE' WHERE LOWER(status) = 'done' OR status = 'DONE'")
-    cur.execute("UPDATE tasks SET status = 'CANCELLED' WHERE LOWER(status) = 'cancelled' OR status = 'CANCELLED'")
-    conn.commit()
+        cur.execute("UPDATE tasks SET status = 'PENDING' WHERE LOWER(status) = 'pending' OR status = 'PENDING'")
+        cur.execute("UPDATE tasks SET status = 'IN_PROGRESS' WHERE LOWER(status) = 'in_progress' OR status = 'IN_PROGRESS'")
+        cur.execute("UPDATE tasks SET status = 'DONE' WHERE LOWER(status) = 'done' OR status = 'DONE'")
+        cur.execute("UPDATE tasks SET status = 'CANCELLED' WHERE LOWER(status) = 'cancelled' OR status = 'CANCELLED'")
+        conn.commit()
+    except Exception as e:
+        print(f"ℹ️ Bỏ qua chuẩn hóa enum nếu bảng chưa có dữ liệu: {e}")
 
     # Bước 2: Kiểm tra số cuộc họp hiện có
     cur.execute("SELECT id, title, status FROM meetings")
