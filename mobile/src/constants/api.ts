@@ -3,22 +3,57 @@
  *
  * Cấu hình tập trung cho mọi lời gọi API đến FastAPI Backend.
  *
- * ✅ Platform detection tự động:
- *   - Web (Expo Web / Laptop): → http://localhost:8000 (nhanh nhất, không lo đổi IP)
- *   - Mobile (iOS/Android):    → http://<LAN_IP>:8000 (điện thoại cần IP LAN)
+ * ✅ Platform & Network detection tự động (Bất tử kết nối IPv4 & Web):
+ *   - Web (Expo Web / Laptop): Tự động phát hiện window.location.hostname.
+ *     Khi chạy trên localhost, ưu tiên dùng 127.0.0.1 để tránh lỗi phân giải IPv6 ::1 trên Windows.
+ *   - Mobile (iOS/Android): Dùng IP mạng LAN nội bộ (hoặc IP cấu hình).
  */
 
 import { Platform } from "react-native";
 
-// ✏️ CHỈ cần đổi giá trị này khi dùng Mobile trên điện thoại
 export const BACKEND_IP = "192.168.1.7";
 export const BACKEND_PORT = 8000;
 
-// ✅ FIX: Web luôn dùng localhost → không sợ đổi WiFi khi mang laptop đi báo cáo
-export const BASE_URL =
-  Platform.OS === "web"
-    ? `http://localhost:${BACKEND_PORT}`
-    : `http://${BACKEND_IP}:${BACKEND_PORT}`;
+/**
+ * Tự động xác định URL Backend tối ưu nhất:
+ * Trên Web: Nếu đang chạy trên localhost hoặc 127.0.0.1, ép dùng 127.0.0.1
+ * để chắc chắn kết nối tới socket IPv4 của uvicorn 0.0.0.0.
+ */
+/**
+ * Tự động xác định URL Backend tối ưu nhất:
+ * - Khi chạy hợp nhất trên cùng cổng 8000 (Local hoặc Public Cloudflare HTTPS):
+ *   Dùng chính window.location.origin để gọi thẳng API trên cùng host/port.
+ * - Khi chạy qua Expo Dev Server (port 8081 / 19006):
+ *   Gọi tới cổng 8000 của máy chủ backend.
+ */
+function resolveBackendBaseUrl(): string {
+  if (Platform.OS === "web") {
+    try {
+      if (typeof window !== "undefined" && window.location) {
+        const { protocol, hostname, port, origin } = window.location;
+        // 1. Nếu đang truy cập qua cổng 8000 hoặc qua HTTPS / Public domain (không phải Expo dev port 8081/19006/8082)
+        if (
+          port === "8000" ||
+          protocol === "https:" ||
+          (port !== "8081" && port !== "19006" && port !== "8082")
+        ) {
+          if (origin && !origin.includes(":8081") && !origin.includes(":19006")) {
+            return origin;
+          }
+        }
+        // 2. Nếu đang chạy trên Expo Dev Server (port 8081)
+        const host = hostname || "localhost";
+        return `http://${host}:${BACKEND_PORT}`;
+      }
+    } catch {
+      // Fallback nếu window chưa sẵn sàng
+    }
+    return `http://127.0.0.1:${BACKEND_PORT}`;
+  }
+  return `http://${BACKEND_IP}:${BACKEND_PORT}`;
+}
+
+export const BASE_URL = resolveBackendBaseUrl();
 
 export const API_ENDPOINTS = {
   /** POST – Tạo cuộc họp mới, body: { title, description? } */
@@ -56,6 +91,14 @@ export const API_ENDPOINTS = {
   /** POST – AI Tái cấu trúc & Biên tập văn bản theo nhiều phong cách */
   aiRewrite: (meetingId: number) =>
     `${BASE_URL}/api/v1/meetings/${meetingId}/ai-rewrite`,
+
+  /** GET – Xuất file Word (.doc) chuẩn thể thức */
+  exportDoc: (meetingId: number) =>
+    `${BASE_URL}/api/v1/meetings/${meetingId}/export-doc`,
+
+  /** POST – Trợ lý hỏi đáp thông minh với nội dung cuộc họp (Meeting Copilot) */
+  askMeeting: (meetingId: number) =>
+    `${BASE_URL}/api/v1/meetings/${meetingId}/ask`,
 } as const;
 
 /** Timeout dài cho AI processing (15 phút – file 1 tiếng) */

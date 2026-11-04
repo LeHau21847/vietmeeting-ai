@@ -1,14 +1,14 @@
 /**
  * src/components/AIConfigModal.tsx
  *
- * Modal cấu hình nhanh Google Gemini API Key & AI Engine Switcher (Hybrid AI).
+ * Modal cấu hình Google Gemini API Key & AI Engine Switcher (Hybrid AI).
  * Tích hợp huy hiệu trạng thái AI Engine trên Header.
+ * Thiết kế theo chuẩn Human-Crafted UI: Zero-Emoji, Swiss/Linear Neutral Palette.
  */
 
 import React, { useEffect, useState } from "react";
 import {
   ActivityIndicator,
-  Alert,
   Clipboard,
   Modal,
   Platform,
@@ -18,7 +18,7 @@ import {
   TextInput,
   View,
 } from "react-native";
-import { Ionicons } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import axios from "axios";
 
 import { API_ENDPOINTS, API_TIMEOUT_SHORT_MS } from "@/constants/api";
@@ -43,7 +43,6 @@ export function AIConfigModal({
   const [saveSuccess, setSaveSuccess] = useState(false);
   const [errorMsg, setErrorMsg] = useState("");
 
-  // Tải cấu hình hiện tại khi modal mở
   useEffect(() => {
     if (visible) {
       fetchConfig();
@@ -61,7 +60,7 @@ export function AIConfigModal({
       setConfig(res.data);
       setPreferredEngine(res.data.preferred_engine);
     } catch {
-      setErrorMsg("Không thể kết nối đến Backend để kiểm tra cấu hình AI.");
+      setErrorMsg("Không thể kết nối đến máy chủ để kiểm tra cấu hình AI.");
     } finally {
       setIsLoading(false);
     }
@@ -109,7 +108,7 @@ export function AIConfigModal({
       setTimeout(() => {
         setSaveSuccess(false);
         onClose();
-      }, 1200);
+      }, 1000);
     } catch (err: any) {
       setErrorMsg(err?.response?.data?.message || "Lỗi khi lưu cấu hình AI.");
     } finally {
@@ -130,21 +129,21 @@ export function AIConfigModal({
           <View style={styles.headerRow}>
             <View style={styles.headerLeft}>
               <View style={styles.iconBox}>
-                <Ionicons name="sparkles" size={20} color="#a855f7" />
+                <Feather name="sliders" size={17} color="#2563EB" />
               </View>
               <View>
                 <Text style={styles.title}>Cấu hình AI Engine</Text>
-                <Text style={styles.subTitle}>Google Gemini Cloud & Local AI</Text>
+                <Text style={styles.subTitle}>Google Gemini Multimodal & Local Offline AI</Text>
               </View>
             </View>
-            <Pressable onPress={onClose} style={styles.closeBtn}>
-              <Ionicons name="close" size={20} color="#94a3b8" />
+            <Pressable onPress={onClose} hitSlop={8} style={styles.closeBtn}>
+              <Feather name="x" size={18} color="#94A3B8" />
             </Pressable>
           </View>
 
           {isLoading ? (
             <View style={styles.loadingBox}>
-              <ActivityIndicator size="large" color="#a855f7" />
+              <ActivityIndicator size="small" color="#2563EB" />
               <Text style={styles.loadingText}>Đang đọc cấu hình hệ thống...</Text>
             </View>
           ) : (
@@ -161,49 +160,49 @@ export function AIConfigModal({
                         : styles.engineTagLocal,
                     ]}
                   >
-                    <Ionicons
-                      name={config?.active_engine === "gemini" ? "sparkles" : "hardware-chip-outline"}
-                      size={13}
-                      color={config?.active_engine === "gemini" ? "#c084fc" : "#38bdf8"}
-                      style={{ marginRight: 4 }}
+                    <Feather
+                      name={config?.active_engine === "gemini" ? "cloud" : "cpu"}
+                      size={12}
+                      color={config?.active_engine === "gemini" ? "#2563EB" : "#0284C7"}
+                      style={{ marginRight: 5 }}
                     />
                     <Text
                       style={[
                         styles.engineTagText,
                         config?.active_engine === "gemini"
-                          ? { color: "#e9d5ff" }
-                          : { color: "#bae6fd" },
+                          ? { color: "#1D4ED8" }
+                          : { color: "#0369A1" },
                       ]}
                     >
                       {config?.active_engine === "gemini"
-                        ? "Google Gemini Pro AI (99%)"
-                        : "Local Offline AI"}
+                        ? "Google Gemini Pro AI (Đám mây)"
+                        : "Local Offline AI (Nội bộ)"}
                     </Text>
                   </View>
                 </View>
 
                 {config?.has_gemini_key ? (
                   <View style={styles.keyRow}>
-                    <Ionicons name="key-outline" size={14} color="#34d399" />
+                    <Feather name="check-circle" size={13} color="#10B981" />
                     <Text style={styles.keyActiveText}>
-                      API Key đã nạp:{" "}
-                      <Text style={{ fontWeight: "700", color: "#6ee7b7" }}>
+                      Khóa API hợp lệ:{" "}
+                      <Text style={{ fontWeight: "600", color: "#34D399" }}>
                         {config.gemini_api_key_masked}
                       </Text>
                     </Text>
                   </View>
                 ) : (
                   <View style={styles.keyRow}>
-                    <Ionicons name="alert-circle-outline" size={14} color="#fbbf24" />
+                    <Feather name="alert-circle" size={13} color="#F59E0B" />
                     <Text style={styles.keyMissingText}>
-                      Chưa cấu hình Gemini API Key. Đang dùng Local AI.
+                      Chưa thiết lập Gemini API Key. Hệ thống sử dụng Local AI.
                     </Text>
                   </View>
                 )}
               </View>
 
               {/* Lựa chọn Engine ưu tiên */}
-              <Text style={styles.sectionLabel}>CHẾ ĐỘ XỬ LÝ ƯU TIÊN</Text>
+              <Text style={styles.sectionLabel}>CHẾ ĐỘ XỬ LÝ MỤC TIÊU</Text>
               <View style={styles.engineChoiceRow}>
                 {/* Option Gemini */}
                 <Pressable
@@ -214,11 +213,13 @@ export function AIConfigModal({
                   ]}
                 >
                   <View style={styles.choiceHeader}>
-                    <Ionicons
-                      name="sparkles"
-                      size={18}
-                      color={preferredEngine === "gemini" ? "#c084fc" : "#64748b"}
-                    />
+                    <View style={styles.choiceIconBadge}>
+                      <Feather
+                        name="cloud"
+                        size={15}
+                        color={preferredEngine === "gemini" ? "#2563EB" : "#64748B"}
+                      />
+                    </View>
                     <View
                       style={[
                         styles.radioDot,
@@ -226,9 +227,9 @@ export function AIConfigModal({
                       ]}
                     />
                   </View>
-                  <Text style={styles.choiceTitle}>Google Gemini AI</Text>
+                  <Text style={styles.choiceTitle}>Google Gemini Pro</Text>
                   <Text style={styles.choiceDesc}>
-                    Chính xác 99%, nhanh, không tốn VRAM. Tối ưu gỡ băng & tạo biên bản chuẩn.
+                    Chính xác cao, xử lý tệp âm thanh trực tiếp qua Multimodal Audio, tốc độ nhanh.
                   </Text>
                 </Pressable>
 
@@ -241,11 +242,13 @@ export function AIConfigModal({
                   ]}
                 >
                   <View style={styles.choiceHeader}>
-                    <Ionicons
-                      name="shield-checkmark"
-                      size={18}
-                      color={preferredEngine === "local" ? "#38bdf8" : "#64748b"}
-                    />
+                    <View style={styles.choiceIconBadge}>
+                      <Feather
+                        name="cpu"
+                        size={15}
+                        color={preferredEngine === "local" ? "#0284C7" : "#64748B"}
+                      />
+                    </View>
                     <View
                       style={[
                         styles.radioDot,
@@ -255,7 +258,7 @@ export function AIConfigModal({
                   </View>
                   <Text style={styles.choiceTitle}>Local Offline AI</Text>
                   <Text style={styles.choiceDesc}>
-                    Hoạt động 100% nội bộ không cần Internet (Whisper + Ollama Qwen2.5).
+                    Bảo mật tuyệt đối, hoạt động nội bộ không cần Internet (Whisper + Ollama).
                   </Text>
                 </Pressable>
               </View>
@@ -265,8 +268,8 @@ export function AIConfigModal({
                 <View style={styles.inputHeaderRow}>
                   <Text style={styles.sectionLabel}>GOOGLE GEMINI API KEY</Text>
                   <Pressable onPress={handlePasteClipboard} style={styles.pasteBtn}>
-                    <Ionicons name="clipboard-outline" size={13} color="#a855f7" />
-                    <Text style={styles.pasteBtnText}>Dán từ Clipboard</Text>
+                    <Feather name="clipboard" size={12} color="#2563EB" />
+                    <Text style={styles.pasteBtnText}>Dán từ bộ nhớ đệm</Text>
                   </Pressable>
                 </View>
 
@@ -275,24 +278,24 @@ export function AIConfigModal({
                   onChangeText={setApiKeyInput}
                   placeholder={
                     config?.has_gemini_key
-                      ? "Nhập key mới nếu muốn đổi (hoặc để trống giữ nguyên)"
+                      ? "Nhập khóa mới để thay thế (để trống nếu giữ nguyên)"
                       : "Dán Google Gemini API Key tại đây..."
                   }
-                  placeholderTextColor="#64748b"
+                  placeholderTextColor="#64748B"
                   style={styles.keyInput}
                   autoCapitalize="none"
                   autoCorrect={false}
                   secureTextEntry={false}
                 />
                 <Text style={styles.inputHint}>
-                  💡 Key được lưu an toàn vào file <Text style={{ color: "#a855f7" }}>.env</Text> và biến môi trường server.
+                  Khóa API được lưu an toàn vào tệp môi trường .env trên máy chủ.
                 </Text>
               </View>
 
               {/* Thông báo lỗi nếu có */}
               {errorMsg ? (
                 <View style={styles.errBanner}>
-                  <Ionicons name="alert-circle" size={16} color="#f87171" />
+                  <Feather name="alert-triangle" size={14} color="#EF4444" />
                   <Text style={styles.errBannerText}>{errorMsg}</Text>
                 </View>
               ) : null}
@@ -300,8 +303,8 @@ export function AIConfigModal({
               {/* Thông báo thành công */}
               {saveSuccess ? (
                 <View style={styles.successBanner}>
-                  <Ionicons name="checkmark-circle" size={16} color="#34d399" />
-                  <Text style={styles.successBannerText}>Đã cập nhật cấu hình AI thành công!</Text>
+                  <Feather name="check" size={14} color="#10B981" />
+                  <Text style={styles.successBannerText}>Đã cập nhật cấu hình AI thành công.</Text>
                 </View>
               ) : null}
 
@@ -314,13 +317,13 @@ export function AIConfigModal({
                 <Pressable
                   onPress={handleSave}
                   disabled={isSaving}
-                  style={[styles.saveBtn, isSaving && { opacity: 0.6 }]}
+                  style={[styles.saveBtn, isSaving && { opacity: 0.7 }]}
                 >
                   {isSaving ? (
-                    <ActivityIndicator size="small" color="#fff" />
+                    <ActivityIndicator size="small" color="#FFFFFF" />
                   ) : (
                     <>
-                      <Ionicons name="save-outline" size={16} color="#fff" style={{ marginRight: 6 }} />
+                      <Feather name="save" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
                       <Text style={styles.saveBtnText}>Lưu cấu hình</Text>
                     </>
                   )}
@@ -335,29 +338,38 @@ export function AIConfigModal({
 }
 
 /**
- * Huy hiệu AI Engine hiển thị trên Header (có thể bấm vào để mở Modal cấu hình).
+ * Huy hiệu AI Engine hiển thị trên Header (bấm để mở Modal cấu hình).
  */
 export function AIEngineBadge({
   onPress,
+  currentConfig,
 }: {
   onPress: () => void;
+  currentConfig?: AIConfigData | null;
 }): React.JSX.Element {
-  const [config, setConfig] = useState<AIConfigData | null>(null);
+  const [internalConfig, setInternalConfig] = useState<AIConfigData | null>(null);
 
   useEffect(() => {
+    if (currentConfig) {
+      setInternalConfig(currentConfig);
+      return;
+    }
     let isMounted = true;
     axios
       .get<AIConfigData>(API_ENDPOINTS.aiConfig, { timeout: 4000 })
       .then((res) => {
-        if (isMounted) setConfig(res.data);
+        if (isMounted) setInternalConfig(res.data);
       })
       .catch(() => {});
     return () => {
       isMounted = false;
     };
-  }, []);
+  }, [currentConfig]);
 
-  const isGemini = config?.active_engine === "gemini";
+  const activeConfig = currentConfig || internalConfig;
+  const isGemini =
+    activeConfig?.active_engine === "gemini" ||
+    (Boolean(activeConfig?.has_gemini_key) && activeConfig?.preferred_engine !== "local");
 
   return (
     <Pressable
@@ -368,15 +380,21 @@ export function AIEngineBadge({
         pressed && { opacity: 0.8 },
       ]}
     >
-      <Ionicons
-        name={isGemini ? "sparkles" : "hardware-chip-outline"}
-        size={14}
-        color={isGemini ? "#d8b4fe" : "#7dd3fc"}
+      <View
+        style={[
+          badgeStyles.statusDot,
+          { backgroundColor: isGemini ? "#2563EB" : "#64748B" },
+        ]}
+      />
+      <Feather
+        name={isGemini ? "cloud" : "cpu"}
+        size={12}
+        color={isGemini ? "#2563EB" : "#94A3B8"}
       />
       <Text style={[badgeStyles.badgeText, isGemini ? badgeStyles.geminiText : badgeStyles.localText]}>
-        {isGemini ? "✨ Google Gemini Pro (99%)" : "💻 Local AI (Offline)"}
+        {isGemini ? "Gemini Pro AI" : "Local AI"}
       </Text>
-      <Ionicons name="chevron-down" size={12} color="#94a3b8" style={{ marginLeft: 2 }} />
+      <Feather name="chevron-down" size={11} color={isGemini ? "#2563EB" : "#64748B"} />
     </Pressable>
   );
 }
@@ -387,111 +405,114 @@ const badgeStyles = StyleSheet.create({
     alignItems: "center",
     gap: 6,
     paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 20,
+    paddingVertical: 5,
+    borderRadius: 8,
     borderWidth: 1,
   },
+  statusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+  },
   geminiBadge: {
-    backgroundColor: "rgba(168, 85, 247, 0.15)",
-    borderColor: "rgba(168, 85, 247, 0.4)",
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    borderColor: "rgba(37, 99, 235, 0.28)",
   },
   localBadge: {
-    backgroundColor: "rgba(56, 189, 248, 0.12)",
-    borderColor: "rgba(56, 189, 248, 0.3)",
+    backgroundColor: "rgba(100, 116, 139, 0.08)",
+    borderColor: "rgba(100, 116, 139, 0.25)",
   },
   badgeText: {
     fontSize: 12,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   geminiText: {
-    color: "#f3e8ff",
+    color: "#3B82F6",
   },
   localText: {
-    color: "#e0f2fe",
+    color: "#94A3B8",
   },
 });
 
 const styles = StyleSheet.create({
   overlay: {
     flex: 1,
-    backgroundColor: "rgba(0, 0, 0, 0.75)",
+    backgroundColor: "rgba(12, 14, 18, 0.8)",
     justifyContent: "center",
     alignItems: "center",
     padding: 16,
   },
   modalCard: {
     width: "100%",
-    maxWidth: 520,
-    backgroundColor: "#0f172a",
-    borderRadius: 20,
+    maxWidth: 500,
+    backgroundColor: "#161920",
+    borderRadius: 10,
     borderWidth: 1,
-    borderColor: "rgba(168, 85, 247, 0.3)",
+    borderColor: "#262932",
     overflow: "hidden",
-    shadowColor: "#a855f7",
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.25,
-    shadowRadius: 25,
-    elevation: 12,
   },
   headerRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingHorizontal: 18,
+    paddingVertical: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "#1e293b",
-    backgroundColor: "#131d35",
+    borderBottomColor: "#262932",
+    backgroundColor: "#1A1D26",
   },
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   iconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: "rgba(168, 85, 247, 0.18)",
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
   title: {
-    fontSize: 16,
-    fontWeight: "800",
-    color: "#f8fafc",
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#F8FAFC",
   },
   subTitle: {
-    fontSize: 12,
-    color: "#94a3b8",
+    fontSize: 11,
+    color: "#94A3B8",
     marginTop: 1,
   },
   closeBtn: {
-    padding: 6,
-    borderRadius: 8,
-    backgroundColor: "#1e293b",
-  },
-  loadingBox: {
-    padding: 40,
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: "#1F232D",
     alignItems: "center",
     justifyContent: "center",
-    gap: 12,
+  },
+  loadingBox: {
+    padding: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 10,
   },
   loadingText: {
-    color: "#94a3b8",
+    color: "#94A3B8",
     fontSize: 13,
   },
   body: {
-    padding: 20,
-    gap: 16,
+    padding: 18,
+    gap: 14,
   },
   statusBox: {
-    backgroundColor: "#1e293b",
-    borderRadius: 12,
+    backgroundColor: "#111318",
+    borderRadius: 8,
     padding: 12,
     gap: 8,
     borderWidth: 1,
-    borderColor: "#334155",
+    borderColor: "#262932",
   },
   statusRow: {
     flexDirection: "row",
@@ -499,9 +520,9 @@ const styles = StyleSheet.create({
     justifyContent: "space-between",
   },
   statusLabel: {
-    color: "#94a3b8",
+    color: "#94A3B8",
     fontSize: 12,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   engineTag: {
     flexDirection: "row",
@@ -509,89 +530,102 @@ const styles = StyleSheet.create({
     paddingHorizontal: 8,
     paddingVertical: 3,
     borderRadius: 6,
+    backgroundColor: "#1F232D",
   },
   engineTagGemini: {
-    backgroundColor: "rgba(168, 85, 247, 0.25)",
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.25)",
   },
   engineTagLocal: {
-    backgroundColor: "rgba(56, 189, 248, 0.2)",
+    backgroundColor: "rgba(2, 132, 199, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(2, 132, 199, 0.25)",
   },
   engineTagText: {
     fontSize: 11,
-    fontWeight: "700",
+    fontWeight: "600",
   },
   keyRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingTop: 4,
+    paddingTop: 6,
     borderTopWidth: 1,
     borderTopColor: "rgba(255, 255, 255, 0.05)",
   },
   keyActiveText: {
     fontSize: 12,
-    color: "#cbd5e1",
+    color: "#CBD5E1",
   },
   keyMissingText: {
     fontSize: 12,
-    color: "#fbbf24",
+    color: "#F59E0B",
   },
   sectionLabel: {
     fontSize: 11,
-    fontWeight: "800",
-    color: "#64748b",
-    letterSpacing: 0.5,
+    fontWeight: "600",
+    color: "#64748B",
+    letterSpacing: 0.6,
   },
   engineChoiceRow: {
     flexDirection: "row",
-    gap: 12,
+    gap: 10,
   },
   choiceCard: {
     flex: 1,
-    backgroundColor: "#172033",
-    borderRadius: 12,
+    backgroundColor: "#111318",
+    borderRadius: 8,
     padding: 12,
-    borderWidth: 1.5,
-    borderColor: "#334155",
+    borderWidth: 1,
+    borderColor: "#262932",
     gap: 6,
   },
   choiceCardActiveGemini: {
-    borderColor: "#a855f7",
-    backgroundColor: "rgba(168, 85, 247, 0.12)",
+    borderColor: "#2563EB",
+    backgroundColor: "rgba(37, 99, 235, 0.06)",
   },
   choiceCardActiveLocal: {
-    borderColor: "#38bdf8",
-    backgroundColor: "rgba(56, 189, 248, 0.1)",
+    borderColor: "#0284C7",
+    backgroundColor: "rgba(2, 132, 199, 0.06)",
   },
   choiceHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
   },
+  choiceIconBadge: {
+    width: 26,
+    height: 26,
+    borderRadius: 6,
+    backgroundColor: "#1F232D",
+    alignItems: "center",
+    justifyContent: "center",
+  },
   radioDot: {
-    width: 14,
-    height: 14,
-    borderRadius: 7,
+    width: 12,
+    height: 12,
+    borderRadius: 6,
     borderWidth: 1.5,
     borderColor: "#475569",
   },
   radioDotActiveGemini: {
-    borderColor: "#a855f7",
-    backgroundColor: "#a855f7",
+    borderColor: "#2563EB",
+    backgroundColor: "#2563EB",
   },
   radioDotActiveLocal: {
-    borderColor: "#38bdf8",
-    backgroundColor: "#38bdf8",
+    borderColor: "#0284C7",
+    backgroundColor: "#0284C7",
   },
   choiceTitle: {
     fontSize: 13,
-    fontWeight: "700",
-    color: "#f1f5f9",
+    fontWeight: "600",
+    color: "#F1F5F9",
   },
   choiceDesc: {
     fontSize: 11,
-    color: "#94a3b8",
-    lineHeight: 15,
+    color: "#94A3B8",
+    lineHeight: 16,
   },
   inputSection: {
     gap: 6,
@@ -606,88 +640,90 @@ const styles = StyleSheet.create({
     alignItems: "center",
     gap: 4,
     paddingHorizontal: 8,
-    paddingVertical: 2,
+    paddingVertical: 3,
     borderRadius: 4,
-    backgroundColor: "rgba(168, 85, 247, 0.15)",
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
   },
   pasteBtnText: {
     fontSize: 11,
-    color: "#c084fc",
-    fontWeight: "600",
+    color: "#60A5FA",
+    fontWeight: "500",
   },
   keyInput: {
-    backgroundColor: "#090d16",
-    borderRadius: 10,
+    backgroundColor: "#111318",
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#334155",
-    color: "#f8fafc",
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderColor: "#262932",
+    color: "#F8FAFC",
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     fontSize: 13,
     fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
   },
   inputHint: {
     fontSize: 11,
-    color: "#64748b",
+    color: "#64748B",
   },
   errBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "rgba(248, 113, 113, 0.12)",
+    backgroundColor: "rgba(239, 68, 68, 0.08)",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "rgba(248, 113, 113, 0.3)",
+    borderColor: "rgba(239, 68, 68, 0.25)",
   },
   errBannerText: {
     fontSize: 12,
-    color: "#fca5a5",
+    color: "#FCA5A5",
     flex: 1,
   },
   successBanner: {
     flexDirection: "row",
     alignItems: "center",
     gap: 8,
-    backgroundColor: "rgba(52, 211, 153, 0.12)",
+    backgroundColor: "rgba(16, 185, 129, 0.08)",
     padding: 10,
-    borderRadius: 8,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "rgba(52, 211, 153, 0.3)",
+    borderColor: "rgba(16, 185, 129, 0.25)",
   },
   successBannerText: {
     fontSize: 12,
-    color: "#6ee7b7",
+    color: "#6EE7B7",
     flex: 1,
   },
   btnRow: {
     flexDirection: "row",
     justifyContent: "flex-end",
-    gap: 10,
-    marginTop: 6,
+    gap: 8,
+    marginTop: 4,
   },
   cancelBtn: {
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: "#1e293b",
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#1F232D",
+    borderWidth: 1,
+    borderColor: "#262932",
   },
   cancelBtnText: {
-    color: "#cbd5e1",
+    color: "#94A3B8",
     fontSize: 13,
-    fontWeight: "600",
+    fontWeight: "500",
   },
   saveBtn: {
     flexDirection: "row",
     alignItems: "center",
-    paddingHorizontal: 20,
-    paddingVertical: 10,
-    borderRadius: 10,
-    backgroundColor: "#9333ea",
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+    borderRadius: 8,
+    backgroundColor: "#2563EB",
   },
   saveBtnText: {
-    color: "#ffffff",
+    color: "#FFFFFF",
     fontSize: 13,
-    fontWeight: "700",
+    fontWeight: "600",
   },
 });

@@ -22,13 +22,13 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 export default function App(): React.JSX.Element {
   return (
     <SafeAreaProvider>
-      <StatusBar style="light" backgroundColor="#0f0f1a" />
+      <StatusBar style="light" backgroundColor="#0C0E12" />
       <NavigationContainer>
         <Stack.Navigator
           initialRouteName="Home"
           screenOptions={{
             headerShown: false,           // Header tuỳ chỉnh trong từng screen
-            contentStyle: { backgroundColor: "#0f0f1a" },
+            contentStyle: { backgroundColor: "#0C0E12" },
             animation: "slide_from_right",
           }}
         >

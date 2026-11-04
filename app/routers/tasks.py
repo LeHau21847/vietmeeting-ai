@@ -29,6 +29,36 @@ router = APIRouter(
 
 
 # ===========================================================================
+# GET /api/v1/tasks – Danh sách nhiệm vụ toàn hệ thống (Cross-meeting)
+# ===========================================================================
+@router.get(
+    "",
+    response_model=list[TaskRead],
+    status_code=status.HTTP_200_OK,
+    summary="Danh sách công việc toàn hệ thống",
+    description="Lấy danh sách các công việc phát sinh từ các cuộc họp, sắp xếp theo thời gian mới nhất.",
+)
+async def list_tasks(
+    status_filter: TaskStatus | None = None,
+    limit: int = 30,
+    db: AsyncSession = Depends(get_db),
+) -> list[TaskRead]:
+    try:
+        stmt = select(Task).order_by(Task.created_at.desc()).limit(limit)
+        if status_filter:
+            stmt = stmt.where(Task.status == status_filter)
+        result = await db.execute(stmt)
+        tasks = result.scalars().all()
+        return [TaskRead.model_validate(t) for t in tasks]
+    except Exception as exc:
+        logger.error("❌ Lỗi lấy danh sách tasks: %s", str(exc), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "database_error", "message": "Không thể tải danh sách nhiệm vụ.", "detail": str(exc)},
+        )
+
+
+# ===========================================================================
 # GET /api/v1/tasks/{task_id} – Chi tiết một task
 # ===========================================================================
 @router.get(

@@ -1,16 +1,15 @@
 /**
  * src/screens/HomeScreen.tsx
  *
- * Executive Dashboard – VietMeeting AI
- * Modern AI SaaS Dashboard (phong cách Otter.ai / Notion / Linear)
- * Dark Deep Space theme, responsive chuẩn trên Web & Mobile
+ * Bảng điều khiển Quản lý Cuộc họp – VietMeeting AI
+ * Thiết kế theo chuẩn Human-Crafted UI: Swiss Editorial & Linear Palette,
+ * Zero-Emoji, Feather Vector Icons, hỗ trợ Giao diện Sáng / Tối (Light / Dark Theme).
  */
 
-import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
   Alert,
-  Animated,
   FlatList,
   Modal,
   Platform,
@@ -25,12 +24,13 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { useNavigation } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
-import { Ionicons } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import axios, { AxiosError } from "axios";
 
 import { API_ENDPOINTS, API_TIMEOUT_SHORT_MS, BASE_URL } from "@/constants/api";
 import { AIEngineBadge, AIConfigModal } from "@/components/AIConfigModal";
 import type {
+  AIConfigData,
   APIErrorResponse,
   MeetingCreateBody,
   MeetingSummary,
@@ -38,9 +38,15 @@ import type {
   RootStackParamList,
 } from "@/types/meeting";
 
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
+interface CrossMeetingTask {
+  id: number;
+  meeting_id: number;
+  title: string;
+  status: string;
+  due_date?: string | null;
+  description?: string | null;
+}
+
 type NavProp = NativeStackNavigationProp<RootStackParamList, "Home">;
 
 /** Format ISO date → "DD/MM/YYYY · HH:MM" */
@@ -54,54 +60,98 @@ function formatDate(iso: string): string {
   }
 }
 
-/** Cấu hình trạng thái cuộc họp */
-const STATUS_CONFIG: Record<
-  MeetingStatus,
-  { label: string; color: string; bg: string; border: string; icon: keyof typeof Ionicons.glyphMap }
-> = {
-  created: {
-    label: "Chưa ghi âm",
-    color: "#38bdf8",
-    bg: "rgba(56, 189, 248, 0.12)",
-    border: "rgba(56, 189, 248, 0.3)",
-    icon: "mic-outline",
-  },
-  processing: {
-    label: "Đang xử lý AI",
-    color: "#fbbf24",
-    bg: "rgba(251, 191, 36, 0.12)",
-    border: "rgba(251, 191, 36, 0.3)",
-    icon: "sync-outline",
-  },
-  completed: {
-    label: "Đã hoàn thành",
-    color: "#34d399",
-    bg: "rgba(52, 211, 153, 0.12)",
-    border: "rgba(52, 211, 153, 0.3)",
-    icon: "checkmark-circle",
-  },
-  failed: {
-    label: "Thất bại",
-    color: "#f87171",
-    bg: "rgba(248, 113, 113, 0.12)",
-    border: "rgba(248, 113, 113, 0.3)",
-    icon: "alert-circle",
-  },
-};
-
-// Gợi ý tên cuộc họp nhanh
+// Gợi ý tiêu đề cuộc họp chuẩn hành chính & doanh nghiệp
 const TITLE_SUGGESTIONS = [
-  "Họp kế hoạch tuần",
-  "Đánh giá tiến độ dự án AI",
-  "Thảo luận kiến trúc hệ thống",
-  "Họp giao ban định kỳ",
+  "Họp giao ban công tác tuần",
+  "Đánh giá tiến độ dự án chuyển đổi số",
+  "Họp ban chỉ đạo kế hoạch quý",
+  "Thảo luận kiến trúc hệ thống và bảo mật",
 ];
 
-// ===========================================================================
-// COMPONENT CHÍNH
-// ===========================================================================
 export default function HomeScreen(): React.JSX.Element {
   const navigation = useNavigation<NavProp>();
+
+  // Theme State: 'dark' | 'light'
+  const [theme, setTheme] = useState<"dark" | "light">("dark");
+  const isDark = theme === "dark";
+
+  // Palette động theo theme
+  const palette = useMemo(() => {
+    if (isDark) {
+      return {
+        canvas: "#0C0E12",
+        card: "#161920",
+        surface: "#1A1D26",
+        surfaceHover: "#202430",
+        border: "#262932",
+        borderSubtle: "rgba(255, 255, 255, 0.06)",
+        textPrimary: "#F8FAFC",
+        textSecondary: "#94A3B8",
+        textMuted: "#64748B",
+        accent: "#2563EB",
+        accentLight: "#60A5FA",
+        accentBg: "rgba(37, 99, 235, 0.12)",
+        statusBg: "rgba(100, 116, 139, 0.1)",
+        inputBg: "#111318",
+        statusBar: "light-content" as const,
+      };
+    }
+    return {
+      canvas: "#F8FAFC",
+      card: "#FFFFFF",
+      surface: "#F1F5F9",
+      surfaceHover: "#E2E8F0",
+      border: "#E2E8F0",
+      borderSubtle: "rgba(0, 0, 0, 0.06)",
+      textPrimary: "#0F172A",
+      textSecondary: "#475569",
+      textMuted: "#94A3B8",
+      accent: "#1D4ED8",
+      accentLight: "#2563EB",
+      accentBg: "rgba(29, 78, 216, 0.08)",
+      statusBg: "rgba(241, 245, 249, 1)",
+      inputBg: "#FFFFFF",
+      statusBar: "dark-content" as const,
+    };
+  }, [isDark]);
+
+  // Cấu hình trạng thái cuộc họp không dùng emoji
+  const statusConfig: Record<
+    MeetingStatus,
+    { label: string; color: string; bg: string; border: string; icon: keyof typeof Feather.glyphMap }
+  > = useMemo(
+    () => ({
+      created: {
+        label: "Chưa ghi âm",
+        color: isDark ? "#38BDF8" : "#0284C7",
+        bg: isDark ? "rgba(56, 189, 248, 0.1)" : "rgba(2, 132, 199, 0.08)",
+        border: isDark ? "rgba(56, 189, 248, 0.25)" : "rgba(2, 132, 199, 0.2)",
+        icon: "mic",
+      },
+      processing: {
+        label: "Đang xử lý AI",
+        color: isDark ? "#FBBF24" : "#D97706",
+        bg: isDark ? "rgba(251, 191, 36, 0.1)" : "rgba(217, 119, 6, 0.08)",
+        border: isDark ? "rgba(251, 191, 36, 0.25)" : "rgba(217, 119, 6, 0.2)",
+        icon: "loader",
+      },
+      completed: {
+        label: "Đã có biên bản",
+        color: isDark ? "#34D399" : "#059669",
+        bg: isDark ? "rgba(52, 211, 153, 0.1)" : "rgba(5, 150, 105, 0.08)",
+        border: isDark ? "rgba(52, 211, 153, 0.25)" : "rgba(5, 150, 105, 0.2)",
+        icon: "check-circle",
+      },
+      failed: {
+        label: "Lỗi xử lý",
+        color: isDark ? "#F87171" : "#DC2626",
+        bg: isDark ? "rgba(248, 113, 113, 0.1)" : "rgba(220, 38, 38, 0.08)",
+        border: isDark ? "rgba(248, 113, 113, 0.25)" : "rgba(220, 38, 38, 0.2)",
+        icon: "alert-circle",
+      },
+    }),
+    [isDark]
+  );
 
   // State
   const [meetings, setMeetings] = useState<MeetingSummary[]>([]);
@@ -121,13 +171,40 @@ export default function HomeScreen(): React.JSX.Element {
 
   // Modal cấu hình AI
   const [aiConfigModalVisible, setAiConfigModalVisible] = useState(false);
+  const [aiConfig, setAiConfig] = useState<AIConfigData | null>(null);
 
-  // Animation
-  const fabScale = useRef(new Animated.Value(1)).current;
+  // Cross-meeting Urgent Tasks
+  const [recentTasks, setRecentTasks] = useState<CrossMeetingTask[]>([]);
+  const [isLoadingTasks, setIsLoadingTasks] = useState(false);
 
-  // -------------------------------------------------------------------------
+  // Đọc cấu hình AI từ Backend để đồng bộ tức thì trên Header
+  const fetchAiConfig = useCallback(async () => {
+    try {
+      const res = await axios.get<AIConfigData>(API_ENDPOINTS.aiConfig, {
+        timeout: API_TIMEOUT_SHORT_MS,
+      });
+      setAiConfig(res.data);
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  // Đọc danh sách nhiệm vụ toàn hệ thống
+  const fetchTasks = useCallback(async () => {
+    setIsLoadingTasks(true);
+    try {
+      const res = await axios.get<CrossMeetingTask[]>(`${BASE_URL}/api/v1/tasks?limit=6`, {
+        timeout: API_TIMEOUT_SHORT_MS,
+      });
+      setRecentTasks(res.data);
+    } catch {
+      // ignore
+    } finally {
+      setIsLoadingTasks(false);
+    }
+  }, []);
+
   // Fetch danh sách meetings
-  // -------------------------------------------------------------------------
   const fetchMeetings = useCallback(async (isRefresh = false) => {
     if (isRefresh) setIsRefreshing(true);
     else setIsLoading(true);
@@ -158,7 +235,24 @@ export default function HomeScreen(): React.JSX.Element {
 
   useEffect(() => {
     fetchMeetings();
-  }, [fetchMeetings]);
+    fetchAiConfig();
+    fetchTasks();
+  }, [fetchMeetings, fetchAiConfig, fetchTasks]);
+
+  // Tự động kết nối lại (Auto-Retry Polling) mỗi 2.5s khi gặp lỗi mạng (ví dụ backend đang khởi động)
+  useEffect(() => {
+    let timer: ReturnType<typeof setInterval> | null = null;
+    if (loadError) {
+      timer = setInterval(() => {
+        fetchMeetings(true);
+        fetchAiConfig();
+        fetchTasks();
+      }, 2500);
+    }
+    return () => {
+      if (timer) clearInterval(timer);
+    };
+  }, [loadError, fetchMeetings, fetchAiConfig, fetchTasks]);
 
   // Thống kê nhanh
   const stats = useMemo(() => {
@@ -181,13 +275,11 @@ export default function HomeScreen(): React.JSX.Element {
     });
   }, [meetings, searchQuery, statusFilter]);
 
-  // -------------------------------------------------------------------------
   // Tạo meeting mới
-  // -------------------------------------------------------------------------
   const handleCreateMeeting = async () => {
     const trimmedTitle = newTitle.trim();
     if (trimmedTitle.length < 3) {
-      setCreateError("Tên cuộc họp phải có ít nhất 3 ký tự.");
+      setCreateError("Tiêu đề cuộc họp phải có ít nhất 3 ký tự.");
       return;
     }
 
@@ -223,7 +315,7 @@ export default function HomeScreen(): React.JSX.Element {
       if (axios.isAxiosError(error)) {
         const axErr = error as AxiosError<APIErrorResponse>;
         if (axErr.code === "ECONNREFUSED" || axErr.message.includes("Network Error")) {
-          msg = "Mất kết nối Backend.";
+          msg = "Mất kết nối với máy chủ.";
         } else if (axErr.response?.data?.message) {
           msg = axErr.response.data.message;
         }
@@ -245,9 +337,7 @@ export default function HomeScreen(): React.JSX.Element {
     setCreateError("");
   };
 
-  // -------------------------------------------------------------------------
   // Xóa cuộc họp
-  // -------------------------------------------------------------------------
   const handleDeleteMeeting = (meeting: MeetingSummary) => {
     const proceedDelete = async () => {
       try {
@@ -261,24 +351,21 @@ export default function HomeScreen(): React.JSX.Element {
     };
 
     if (Platform.OS === "web") {
-      if (window.confirm(`Bạn có chắc muốn xóa vĩnh viễn "${meeting.title}"?`)) {
+      if (window.confirm(`Xác nhận xóa vĩnh viễn cuộc họp: "${meeting.title}"?`)) {
         proceedDelete();
       }
     } else {
       Alert.alert(
-        "Xóa cuộc họp",
-        `Bạn có chắc muốn xóa "${meeting.title}"?\nHành động này không thể hoàn tác.`,
+        "Xác nhận xóa",
+        `Bạn có chắc chắn muốn xóa "${meeting.title}"? Dữ liệu không thể khôi phục sau khi xóa.`,
         [
-          { text: "Huỷ", style: "cancel" },
-          { text: "Xóa", style: "destructive", onPress: proceedDelete },
+          { text: "Hủy", style: "cancel" },
+          { text: "Xóa vĩnh viễn", style: "destructive", onPress: proceedDelete },
         ]
       );
     }
   };
 
-  // -------------------------------------------------------------------------
-  // Navigate sang Recording
-  // -------------------------------------------------------------------------
   const handleMeetingPress = (meeting: MeetingSummary) => {
     navigation.navigate("Recording", {
       meetingId: meeting.id,
@@ -287,234 +374,493 @@ export default function HomeScreen(): React.JSX.Element {
     });
   };
 
-  // =========================================================================
-  // RENDER
-  // =========================================================================
+  // Tải nhanh file Word (.doc) 1-click
+  const handleDownloadDoc = (meeting: MeetingSummary) => {
+    const url = `${BASE_URL}/api/v1/meetings/${meeting.id}/export-doc`;
+    if (Platform.OS === "web") {
+      try {
+        window.open(url, "_blank");
+      } catch {
+        // fallback
+      }
+    } else {
+      Alert.alert("Thông báo", "Vui lòng mở ứng dụng trên trình duyệt web để tải file Word trực tiếp.");
+    }
+  };
+
+  // Khởi tạo nhanh phiên họp từ tệp ghi âm sẵn có (.mp3, .wav, .m4a)
+  const handleAudioFileSelect = () => {
+    if (Platform.OS === "web") {
+      try {
+        const input = document.createElement("input");
+        input.type = "file";
+        input.accept = "audio/*,.mp3,.wav,.m4a,.aac,.webm,.ogg";
+        input.onchange = async (e: any) => {
+          const file = e.target?.files?.[0];
+          if (!file) return;
+          const cleanName = file.name.replace(/\.[^/.]+$/, "").replace(/[_-]/g, " ");
+          const title = cleanName.trim() || "Cuộc họp ghi âm từ tệp";
+          try {
+            // 1. Tạo cuộc họp mới
+            const createRes = await axios.post<MeetingSummary>(
+              API_ENDPOINTS.createMeeting,
+              { title },
+              { headers: { "Content-Type": "application/json" } }
+            );
+            const newM = createRes.data;
+            setMeetings((prev) => [newM, ...prev]);
+
+            // 2. Chuyển thẳng vào Studio
+            navigation.navigate("Recording", {
+              meetingId: newM.id,
+              meetingTitle: newM.title,
+              meetingStatus: "created",
+            });
+          } catch {
+            Alert.alert("Lỗi", "Không thể khởi tạo cuộc họp từ file âm thanh.");
+          }
+        };
+        input.click();
+      } catch {
+        handleOpenModal();
+      }
+    } else {
+      handleOpenModal();
+    }
+  };
+
   return (
-    <SafeAreaView style={styles.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#090D16" />
+    <SafeAreaView style={[styles.safeArea, { backgroundColor: palette.canvas }]}>
+      <StatusBar barStyle={palette.statusBar} backgroundColor={palette.canvas} />
       <View style={styles.mainContainer}>
 
         {/* ==================================================================
             HEADER
         ================================================================== */}
-        <View style={styles.header}>
+        <View style={[styles.header, { borderBottomColor: palette.border }]}>
           <View style={styles.headerLeft}>
-            <View style={styles.logoBadge}>
-              <Ionicons name="sparkles" size={20} color="#818cf8" />
+            <View style={[styles.logoBadge, { backgroundColor: palette.accentBg, borderColor: palette.border }]}>
+              <Feather name="layers" size={18} color={palette.accent} />
             </View>
             <View style={{ flex: 1 }}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Text style={styles.appTitle}>VietMeeting AI</Text>
-                <View style={styles.aiTag}>
-                  <Text style={styles.aiTagText}>LOCAL AI 100%</Text>
+                <Text style={[styles.appTitle, { color: palette.textPrimary }]}>VietMeeting AI</Text>
+                <View style={[styles.hybridTag, { borderColor: palette.border }]}>
+                  <Text style={[styles.hybridTagText, { color: palette.accent }]}>HYBRID ENGINE</Text>
                 </View>
               </View>
-              <Text style={styles.appSubtitle}>
-                Trợ lý ghi âm, tạo biên bản & trích xuất công việc thông minh
+              <Text style={[styles.appSubtitle, { color: palette.textSecondary }]}>
+                Hệ thống ghi âm, lập biên bản hành chính & phân công nhiệm vụ
               </Text>
             </View>
           </View>
 
           <View style={styles.headerRight}>
-            {/* Engine Status Badge (bấm vào mở Modal Cấu hình AI) */}
-            <AIEngineBadge onPress={() => setAiConfigModalVisible(true)} />
-
+            {/* Chuyển đổi giao diện Sáng / Tối */}
             <Pressable
-              onPress={() => fetchMeetings(true)}
-              style={({ pressed }) => [styles.iconButton, pressed && styles.buttonPressed]}
+              onPress={() => setTheme(isDark ? "light" : "dark")}
+              hitSlop={6}
+              accessibilityLabel="Chuyển đổi giao diện sáng tối"
+              style={({ pressed }) => [
+                styles.iconButton,
+                { backgroundColor: palette.surface, borderColor: palette.border },
+                pressed && styles.buttonPressed,
+              ]}
             >
-              <Ionicons name="refresh" size={18} color="#94a3b8" />
+              <Feather name={isDark ? "sun" : "moon"} size={16} color={palette.textSecondary} />
             </Pressable>
 
+            {/* Badge AI Engine Switcher (Đồng bộ tức thì cấu hình từ Backend) */}
+            <AIEngineBadge
+              onPress={() => setAiConfigModalVisible(true)}
+              currentConfig={aiConfig}
+            />
+
+            {/* Làm mới */}
+            <Pressable
+              onPress={() => {
+                fetchMeetings(true);
+                fetchAiConfig();
+                fetchTasks();
+              }}
+              style={({ pressed }) => [
+                styles.iconButton,
+                { backgroundColor: palette.surface, borderColor: palette.border },
+                pressed && styles.buttonPressed,
+              ]}
+            >
+              <Feather name="rotate-cw" size={15} color={palette.textSecondary} />
+            </Pressable>
+
+            {/* Tạo cuộc họp mới */}
             <Pressable
               onPress={handleOpenModal}
-              style={({ pressed }) => [styles.headerCtaButton, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [
+                styles.headerCtaButton,
+                { backgroundColor: palette.accent },
+                pressed && styles.buttonPressed,
+              ]}
             >
-              <Ionicons name="add-circle" size={18} color="#ffffff" />
-              <Text style={styles.headerCtaText}>Tạo cuộc họp mới</Text>
+              <Feather name="plus" size={16} color="#FFFFFF" />
+              <Text style={styles.headerCtaText}>Tạo biên bản mới</Text>
             </Pressable>
           </View>
         </View>
 
         {/* ==================================================================
-            BENTO KPI CARDS
+            BENTO KPI METRICS CARDS
         ================================================================== */}
         <View style={styles.statsRow}>
-          <View style={styles.statCard}>
-            <View style={[styles.statIconBox, { backgroundColor: "rgba(99, 102, 241, 0.15)" }]}>
-              <Ionicons name="folder-open" size={18} color="#818cf8" />
+          <View style={[styles.statCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+            <View style={[styles.statIconBox, { backgroundColor: palette.surface }]}>
+              <Feather name="folder" size={16} color={palette.accent} />
             </View>
             <View>
-              <Text style={styles.statNumber}>{stats.total}</Text>
-              <Text style={styles.statLabel}>Tổng cuộc họp</Text>
+              <Text style={[styles.statNumber, { color: palette.textPrimary }]}>{stats.total}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>Tổng cuộc họp</Text>
             </View>
           </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIconBox, { backgroundColor: "rgba(52, 211, 153, 0.15)" }]}>
-              <Ionicons name="checkmark-done" size={18} color="#34d399" />
+          <View style={[styles.statCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+            <View style={[styles.statIconBox, { backgroundColor: palette.surface }]}>
+              <Feather name="check-square" size={16} color="#10B981" />
             </View>
             <View>
-              <Text style={styles.statNumber}>{stats.completed}</Text>
-              <Text style={styles.statLabel}>Đã có biên bản</Text>
+              <Text style={[styles.statNumber, { color: palette.textPrimary }]}>{stats.completed}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>Đã có biên bản</Text>
             </View>
           </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIconBox, { backgroundColor: "rgba(56, 189, 248, 0.15)" }]}>
-              <Ionicons name="shield-checkmark" size={18} color="#38bdf8" />
+          <View style={[styles.statCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+            <View style={[styles.statIconBox, { backgroundColor: palette.surface }]}>
+              <Feather name="clock" size={16} color="#F59E0B" />
             </View>
             <View>
-              <Text style={styles.statNumber}>100%</Text>
-              <Text style={styles.statLabel}>Offline Local</Text>
+              <Text style={[styles.statNumber, { color: palette.textPrimary }]}>{stats.pending}</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>Chờ ghi âm</Text>
             </View>
           </View>
 
-          <View style={styles.statCard}>
-            <View style={[styles.statIconBox, { backgroundColor: "rgba(251, 191, 36, 0.15)" }]}>
-              <Ionicons name="time" size={18} color="#fbbf24" />
+          <View style={[styles.statCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+            <View style={[styles.statIconBox, { backgroundColor: palette.surface }]}>
+              <Feather name="shield" size={16} color="#0284C7" />
             </View>
             <View>
-              <Text style={styles.statNumber}>60+</Text>
-              <Text style={styles.statLabel}>Phút / file</Text>
+              <Text style={[styles.statNumber, { color: palette.textPrimary }]}>100%</Text>
+              <Text style={[styles.statLabel, { color: palette.textSecondary }]}>Bảo mật nội bộ</Text>
             </View>
           </View>
         </View>
 
         {/* ==================================================================
-            TÌM KIẾM VÀ BỘ LỌC
+            KHÔNG GIAN LÀM VIỆC CHÍNH (DESKTOP 2 CỘT 70% - 30%)
         ================================================================== */}
-        <View style={styles.filterSection}>
-          <View style={styles.searchBar}>
-            <Ionicons name="search" size={16} color="#64748b" style={{ marginRight: 8 }} />
-            <TextInput
-              style={styles.searchInput}
-              placeholder="Tìm kiếm theo tiêu đề cuộc họp..."
-              placeholderTextColor="#64748b"
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-            />
-            {searchQuery.length > 0 && (
-              <Pressable onPress={() => setSearchQuery("")} hitSlop={8}>
-                <Ionicons name="close-circle" size={16} color="#64748b" />
-              </Pressable>
-            )}
-          </View>
+        <View style={styles.workspaceRow}>
+          {/* CỘT TRÁI (70%): DANH SÁCH CUỘC HỌP */}
+          <View style={styles.mainColumn}>
+            {/* TÌM KIẾM & BỘ LỌC */}
+            <View style={styles.filterSection}>
+              <View style={[styles.searchBar, { backgroundColor: palette.card, borderColor: palette.border }]}>
+                <Feather name="search" size={15} color={palette.textMuted} style={{ marginRight: 8 }} />
+                <TextInput
+                  style={[styles.searchInput, { color: palette.textPrimary }]}
+                  placeholder="Tìm kiếm theo tiêu đề cuộc họp..."
+                  placeholderTextColor={palette.textMuted}
+                  value={searchQuery}
+                  onChangeText={setSearchQuery}
+                />
+                {searchQuery.length > 0 && (
+                  <Pressable onPress={() => setSearchQuery("")} hitSlop={8}>
+                    <Feather name="x" size={15} color={palette.textMuted} />
+                  </Pressable>
+                )}
+              </View>
 
-          <View style={styles.filterTabs}>
-            {[
-              { id: "all", label: "Tất cả", count: stats.total },
-              { id: "completed", label: "Đã xong", count: stats.completed },
-              { id: "created", label: "Chưa ghi", count: stats.pending },
-              { id: "processing", label: "Đang xử lý", count: stats.processing },
-            ].map((tab) => {
-              const active = statusFilter === tab.id;
-              return (
-                <Pressable
-                  key={tab.id}
-                  onPress={() => setStatusFilter(tab.id)}
-                  style={[styles.filterChip, active && styles.filterChipActive]}
-                >
-                  <Text style={[styles.filterChipText, active && styles.filterChipTextActive]}>
-                    {tab.label}
-                  </Text>
-                  <View style={[styles.filterChipCount, active && styles.filterChipCountActive]}>
-                    <Text style={[styles.filterChipCountText, active && styles.filterChipCountTextActive]}>
-                      {tab.count}
-                    </Text>
-                  </View>
-                </Pressable>
-              );
-            })}
-          </View>
-        </View>
-
-        {/* ==================================================================
-            DANH SÁCH CUỘC HỌP
-        ================================================================== */}
-        {isLoading ? (
-          <View style={styles.centerContainer}>
-            <ActivityIndicator size="large" color="#6366f1" />
-            <Text style={styles.loadingText}>Đang tải danh sách cuộc họp...</Text>
-          </View>
-        ) : loadError ? (
-          <View style={styles.centerContainer}>
-            <View style={styles.errorIconBox}>
-              <Ionicons name="wifi-outline" size={32} color="#f87171" />
+              <View style={styles.filterTabs}>
+                {[
+                  { id: "all", label: "Tất cả", count: stats.total },
+                  { id: "completed", label: "Đã xong", count: stats.completed },
+                  { id: "created", label: "Chờ ghi", count: stats.pending },
+                  { id: "processing", label: "Đang xử lý", count: stats.processing },
+                ].map((tab) => {
+                  const active = statusFilter === tab.id;
+                  return (
+                    <Pressable
+                      key={tab.id}
+                      onPress={() => setStatusFilter(tab.id)}
+                      style={[
+                        styles.filterChip,
+                        {
+                          backgroundColor: active ? palette.accentBg : palette.card,
+                          borderColor: active ? palette.accent : palette.border,
+                        },
+                      ]}
+                    >
+                      <Text
+                        style={[
+                          styles.filterChipText,
+                          { color: active ? palette.accent : palette.textSecondary },
+                          active && { fontWeight: "600" },
+                        ]}
+                      >
+                        {tab.label}
+                      </Text>
+                      <View
+                        style={[
+                          styles.filterChipCount,
+                          { backgroundColor: active ? palette.accent : palette.surface },
+                        ]}
+                      >
+                        <Text
+                          style={[
+                            styles.filterChipCountText,
+                            { color: active ? "#FFFFFF" : palette.textMuted },
+                          ]}
+                        >
+                          {tab.count}
+                        </Text>
+                      </View>
+                    </Pressable>
+                  );
+                })}
+              </View>
             </View>
-            <Text style={styles.errorTitle}>Lỗi kết nối</Text>
-            <Text style={styles.errorMessage}>{loadError}</Text>
-            <Pressable
-              onPress={() => fetchMeetings()}
-              style={({ pressed }) => [styles.primaryButton, pressed && styles.buttonPressed]}
-            >
-              <Ionicons name="reload" size={16} color="#fff" style={{ marginRight: 6 }} />
-              <Text style={styles.primaryButtonText}>Thử lại ngay</Text>
-            </Pressable>
-          </View>
-        ) : (
-          <FlatList
-            data={filteredMeetings}
-            keyExtractor={(item) => String(item.id)}
-            contentContainerStyle={styles.listContent}
-            showsVerticalScrollIndicator={false}
-            refreshControl={
-              <RefreshControl
-                refreshing={isRefreshing}
-                onRefresh={() => fetchMeetings(true)}
-                tintColor="#6366f1"
-                colors={["#6366f1"]}
-              />
-            }
-            ListEmptyComponent={
-              <View style={styles.emptyContainer}>
-                <View style={styles.emptyIconBox}>
-                  <Ionicons name="document-text-outline" size={44} color="#475569" />
+
+            {/* DANH SÁCH CUỘC HỌP */}
+            {isLoading ? (
+              <View style={styles.centerContainer}>
+                <ActivityIndicator size="small" color={palette.accent} />
+                <Text style={[styles.loadingText, { color: palette.textSecondary }]}>
+                  Đang tải danh sách cuộc họp...
+                </Text>
+              </View>
+            ) : loadError ? (
+              <View style={styles.centerContainer}>
+                <View style={[styles.errorIconBox, { backgroundColor: "rgba(239, 68, 68, 0.1)" }]}>
+                  <Feather name="wifi-off" size={24} color="#EF4444" />
                 </View>
-                <Text style={styles.emptyTitle}>
-                  {searchQuery || statusFilter !== "all"
-                    ? "Không tìm thấy cuộc họp phù hợp"
-                    : "Chưa có cuộc họp nào"}
-                </Text>
-                <Text style={styles.emptySubtitle}>
-                  {searchQuery || statusFilter !== "all"
-                    ? "Hãy thử tìm với từ khoá khác hoặc đặt lại bộ lọc."
-                    : "Tạo cuộc họp mới để bắt đầu ghi âm và trích xuất biên bản tự động với Local AI."}
-                </Text>
+                <Text style={styles.errorTitle}>Lỗi kết nối máy chủ</Text>
+                <Text style={[styles.errorMessage, { color: palette.textSecondary }]}>{loadError}</Text>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 6, marginVertical: 8 }}>
+                  <ActivityIndicator size="small" color={palette.accent} />
+                  <Text style={{ fontSize: 12, color: palette.textMuted }}>Đang tự động kết nối lại mỗi 2.5s...</Text>
+                </View>
                 <Pressable
-                  onPress={handleOpenModal}
-                  style={({ pressed }) => [styles.emptyCreateButton, pressed && styles.buttonPressed]}
+                  onPress={() => {
+                    fetchMeetings();
+                    fetchAiConfig();
+                    fetchTasks();
+                  }}
+                  style={({ pressed }) => [
+                    styles.primaryButton,
+                    { backgroundColor: palette.accent },
+                    pressed && styles.buttonPressed,
+                  ]}
                 >
-                  <Ionicons name="add-circle" size={18} color="#fff" style={{ marginRight: 8 }} />
-                  <Text style={styles.emptyCreateButtonText}>Tạo cuộc họp đầu tiên</Text>
+                  <Feather name="rotate-cw" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
+                  <Text style={styles.primaryButtonText}>Thử lại ngay</Text>
                 </Pressable>
               </View>
-            }
-            renderItem={({ item }) => (
-              <MeetingCard
-                meeting={item}
-                onPress={() => handleMeetingPress(item)}
-                onDelete={() => handleDeleteMeeting(item)}
+            ) : (
+              <FlatList
+                data={filteredMeetings}
+                keyExtractor={(item) => String(item.id)}
+                contentContainerStyle={styles.listContent}
+                showsVerticalScrollIndicator={false}
+                refreshControl={
+                  <RefreshControl
+                    refreshing={isRefreshing}
+                    onRefresh={() => {
+                      fetchMeetings(true);
+                      fetchTasks();
+                    }}
+                    tintColor={palette.accent}
+                    colors={[palette.accent]}
+                  />
+                }
+                ListEmptyComponent={
+                  <View style={styles.emptyContainer}>
+                    <View style={[styles.emptyIconBox, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+                      <Feather name="file-text" size={32} color={palette.textMuted} />
+                    </View>
+                    <Text style={[styles.emptyTitle, { color: palette.textPrimary }]}>
+                      {searchQuery || statusFilter !== "all"
+                        ? "Không tìm thấy cuộc họp phù hợp"
+                        : "Chưa có cuộc họp nào trong danh sách"}
+                    </Text>
+                    <Text style={[styles.emptySubtitle, { color: palette.textSecondary }]}>
+                      {searchQuery || statusFilter !== "all"
+                        ? "Vui lòng thử lại với từ khóa khác hoặc xóa bộ lọc trạng thái."
+                        : "Bắt đầu bằng việc tạo cuộc họp mới để tiến hành ghi âm và tạo biên bản chuẩn thể thức."}
+                    </Text>
+                    <Pressable
+                      onPress={handleOpenModal}
+                      style={({ pressed }) => [
+                        styles.emptyCreateButton,
+                        { backgroundColor: palette.accent },
+                        pressed && styles.buttonPressed,
+                      ]}
+                    >
+                      <Feather name="plus" size={16} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.emptyCreateButtonText}>Tạo biên bản đầu tiên</Text>
+                    </Pressable>
+                  </View>
+                }
+                renderItem={({ item }) => (
+                  <MeetingCardItem
+                    meeting={item}
+                    cfg={statusConfig[item.status] ?? statusConfig.created}
+                    palette={palette}
+                    onPress={() => handleMeetingPress(item)}
+                    onDelete={() => handleDeleteMeeting(item)}
+                    onDownloadDoc={() => handleDownloadDoc(item)}
+                  />
+                )}
+                ItemSeparatorComponent={() => <View style={{ height: 8 }} />}
               />
             )}
-            ItemSeparatorComponent={() => <View style={{ height: 10 }} />}
-          />
-        )}
+          </View>
 
-        {/* ==================================================================
-            FAB NÚT NỔI TẠO CUỘC HỌP (CHO MOBILE)
-        ================================================================== */}
+          {/* CỘT PHẢI (30%): BẢNG ĐIỀU HÀNH TÁC VỤ & THEO DÕI (EXECUTIVE ACTION CENTER) */}
+          {Platform.OS === "web" && (
+            <View style={styles.sidebarCol}>
+              {/* Thẻ 1: Khởi tạo nhanh từ tệp âm thanh có sẵn */}
+              <View style={[styles.sidebarCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+                <View style={styles.sidebarCardHeader}>
+                  <View style={[styles.sidebarCardIcon, { backgroundColor: palette.accentBg }]}>
+                    <Feather name="upload-cloud" size={16} color={palette.accent} />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sidebarCardTitle, { color: palette.textPrimary }]}>
+                      Nạp tệp âm thanh nhanh
+                    </Text>
+                    <Text style={[styles.sidebarCardSub, { color: palette.textSecondary }]}>
+                      Khởi tạo từ file ghi âm .mp3, .wav, .m4a
+                    </Text>
+                  </View>
+                </View>
+
+                <Pressable
+                  onPress={handleAudioFileSelect}
+                  style={({ pressed }) => [
+                    styles.dropzoneBox,
+                    { borderColor: palette.accent, backgroundColor: palette.surface },
+                    pressed && styles.buttonPressed,
+                  ]}
+                >
+                  <Feather name="file-plus" size={22} color={palette.accent} />
+                  <Text style={[styles.dropzoneTitle, { color: palette.textPrimary }]}>
+                    Tải file âm thanh có sẵn
+                  </Text>
+                  <Text style={[styles.dropzoneHint, { color: palette.textMuted }]}>
+                    Nhấp để duyệt tệp từ máy tính
+                  </Text>
+                </Pressable>
+              </View>
+
+              {/* Thẻ 2: Theo dõi nhiệm vụ trọng tâm (Cross-meeting Action Tracker) */}
+              <View style={[styles.sidebarCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+                <View style={styles.sidebarCardHeader}>
+                  <View style={[styles.sidebarCardIcon, { backgroundColor: "rgba(16, 185, 129, 0.12)" }]}>
+                    <Feather name="check-square" size={15} color="#10B981" />
+                  </View>
+                  <View style={{ flex: 1 }}>
+                    <Text style={[styles.sidebarCardTitle, { color: palette.textPrimary }]}>
+                      Nhiệm vụ trọng tâm
+                    </Text>
+                    <Text style={[styles.sidebarCardSub, { color: palette.textSecondary }]}>
+                      Đầu việc phát sinh từ các cuộc họp
+                    </Text>
+                  </View>
+                </View>
+
+                {isLoadingTasks ? (
+                  <View style={styles.sidebarLoadingBox}>
+                    <ActivityIndicator size="small" color={palette.accent} />
+                  </View>
+                ) : recentTasks.length === 0 ? (
+                  <View style={styles.emptyTasksBox}>
+                    <Feather name="check-circle" size={18} color="#10B981" />
+                    <Text style={[styles.emptyTasksText, { color: palette.textMuted }]}>
+                      Toàn bộ nhiệm vụ đã được xử lý xong
+                    </Text>
+                  </View>
+                ) : (
+                  <View style={{ gap: 8 }}>
+                    {recentTasks.slice(0, 5).map((t) => {
+                      const isDone = t.status === "done";
+                      return (
+                        <Pressable
+                          key={t.id}
+                          onPress={() => {
+                            const m = meetings.find((item) => item.id === t.meeting_id);
+                            if (m) {
+                              navigation.navigate("Recording", {
+                                meetingId: m.id,
+                                meetingTitle: m.title,
+                                meetingStatus: m.status,
+                              });
+                            }
+                          }}
+                          style={({ pressed }) => [
+                            styles.taskItemCard,
+                            { backgroundColor: palette.surface, borderColor: palette.border },
+                            pressed && styles.buttonPressed,
+                          ]}
+                        >
+                          <View style={styles.taskItemHeader}>
+                            <View
+                              style={[
+                                styles.taskStatusDot,
+                                { backgroundColor: isDone ? "#10B981" : "#F59E0B" },
+                              ]}
+                            />
+                            <Text
+                              style={[
+                                styles.taskItemTitle,
+                                { color: palette.textPrimary },
+                                isDone && { textDecorationLine: "line-through", opacity: 0.6 },
+                              ]}
+                              numberOfLines={2}
+                            >
+                              {t.title}
+                            </Text>
+                          </View>
+                          <View style={styles.taskItemMeta}>
+                            <Text style={[styles.taskMeetingCode, { color: palette.accent }]}>
+                              #{String(t.meeting_id).padStart(4, "0")}/BB-CH
+                            </Text>
+                            {t.due_date ? (
+                              <Text style={[styles.taskDueDate, { color: palette.textMuted }]}>
+                                {String(t.due_date).split("·")[0].trim()}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </Pressable>
+                      );
+                    })}
+                  </View>
+                )}
+              </View>
+            </View>
+          )}
+        </View>
+
+        {/* Nút nổi Tạo cuộc họp trên Mobile */}
         {Platform.OS !== "web" && (
-          <Animated.View style={[styles.fabContainer, { transform: [{ scale: fabScale }] }]}>
+          <View style={styles.fabContainer}>
             <Pressable
               onPress={handleOpenModal}
-              style={({ pressed }) => [styles.fabButton, pressed && styles.buttonPressed]}
+              style={({ pressed }) => [
+                styles.fabButton,
+                { backgroundColor: palette.accent },
+                pressed && styles.buttonPressed,
+              ]}
             >
-              <Ionicons name="add" size={24} color="#fff" />
-              <Text style={styles.fabText}>Cuộc họp mới</Text>
+              <Feather name="plus" size={18} color="#FFFFFF" />
+              <Text style={styles.fabText}>Tạo mới</Text>
             </Pressable>
-          </Animated.View>
+          </View>
         )}
 
         {/* ==================================================================
@@ -527,89 +873,107 @@ export default function HomeScreen(): React.JSX.Element {
           onRequestClose={handleCloseModal}
         >
           <View style={styles.modalOverlay}>
-            <View style={styles.modalCard}>
-              <View style={styles.modalHeader}>
+            <View style={[styles.modalCard, { backgroundColor: palette.card, borderColor: palette.border }]}>
+              <View style={[styles.modalHeader, { borderBottomColor: palette.border }]}>
                 <View style={styles.modalTitleRow}>
-                  <View style={styles.modalIconBox}>
-                    <Ionicons name="mic" size={20} color="#818cf8" />
+                  <View style={[styles.modalIconBox, { backgroundColor: palette.accentBg }]}>
+                    <Feather name="file-plus" size={17} color={palette.accent} />
                   </View>
                   <View>
-                    <Text style={styles.modalTitle}>Tạo cuộc họp mới</Text>
-                    <Text style={styles.modalSubtitle}>Nhập chủ đề hoặc tiêu đề để dễ theo dõi</Text>
+                    <Text style={[styles.modalTitle, { color: palette.textPrimary }]}>Tạo biên bản mới</Text>
+                    <Text style={[styles.modalSubtitle, { color: palette.textSecondary }]}>
+                      Nhập tiêu đề hoặc chọn gợi ý để khởi tạo phiên làm việc
+                    </Text>
                   </View>
                 </View>
                 <Pressable onPress={handleCloseModal} hitSlop={8} style={styles.modalCloseButton}>
-                  <Ionicons name="close" size={20} color="#94a3b8" />
+                  <Feather name="x" size={18} color={palette.textSecondary} />
                 </Pressable>
               </View>
 
               {/* Suggestions */}
-              <Text style={styles.suggestionsTitle}>Gợi ý nhanh:</Text>
+              <Text style={[styles.suggestionsTitle, { color: palette.textSecondary }]}>Gợi ý chủ đề:</Text>
               <View style={styles.suggestionsRow}>
                 {TITLE_SUGGESTIONS.map((sug, i) => (
                   <Pressable
                     key={i}
                     onPress={() => setNewTitle(sug)}
-                    style={({ pressed }) => [styles.suggestionChip, pressed && styles.chipPressed]}
+                    style={({ pressed }) => [
+                      styles.suggestionChip,
+                      { backgroundColor: palette.surface, borderColor: palette.border },
+                      pressed && styles.chipPressed,
+                    ]}
                   >
-                    <Text style={styles.suggestionText}>{sug}</Text>
+                    <Text style={[styles.suggestionText, { color: palette.textPrimary }]}>{sug}</Text>
                   </Pressable>
                 ))}
               </View>
 
               {/* Input */}
-              <Text style={styles.inputLabel}>Tiêu đề cuộc họp</Text>
+              <Text style={[styles.inputLabel, { color: palette.textSecondary }]}>Tiêu đề cuộc họp</Text>
               <TextInput
                 value={newTitle}
                 onChangeText={(t) => {
                   setNewTitle(t);
                   if (createError) setCreateError("");
                 }}
-                placeholder="Ví dụ: Họp chiến lược sản phẩm Q4/2026..."
-                placeholderTextColor="#475569"
+                placeholder="Ví dụ: Họp giao ban công tác tuần..."
+                placeholderTextColor={palette.textMuted}
                 autoFocus
                 returnKeyType="done"
                 onSubmitEditing={handleCreateMeeting}
                 maxLength={200}
                 style={[
                   styles.modalInput,
-                  createError ? styles.modalInputError : newTitle.length >= 3 ? styles.modalInputActive : null,
+                  {
+                    backgroundColor: palette.inputBg,
+                    color: palette.textPrimary,
+                    borderColor: createError ? "#EF4444" : newTitle.length >= 3 ? palette.accent : palette.border,
+                  },
                 ]}
               />
 
               {createError ? (
                 <View style={styles.errorRow}>
-                  <Ionicons name="alert-circle" size={14} color="#f87171" />
+                  <Feather name="alert-circle" size={13} color="#EF4444" />
                   <Text style={styles.errorRowText}>{createError}</Text>
                 </View>
               ) : (
-                <View style={{ height: 16 }} />
+                <View style={{ height: 14 }} />
               )}
 
-              {/* Action Buttons */}
+              {/* Actions */}
               <View style={styles.modalActions}>
                 <Pressable
                   onPress={handleCloseModal}
-                  style={({ pressed }) => [styles.modalCancelButton, pressed && styles.buttonPressed]}
+                  style={({ pressed }) => [
+                    styles.modalCancelButton,
+                    { backgroundColor: palette.surface, borderColor: palette.border },
+                    pressed && styles.buttonPressed,
+                  ]}
                   disabled={isCreating}
                 >
-                  <Text style={styles.modalCancelText}>Hủy</Text>
+                  <Text style={[styles.modalCancelText, { color: palette.textSecondary }]}>Hủy</Text>
                 </Pressable>
 
                 <Pressable
                   onPress={handleCreateMeeting}
-                  style={({ pressed }) => [styles.modalSubmitButton, pressed && styles.buttonPressed]}
+                  style={({ pressed }) => [
+                    styles.modalSubmitButton,
+                    { backgroundColor: palette.accent },
+                    pressed && styles.buttonPressed,
+                  ]}
                   disabled={isCreating}
                 >
                   {isCreating ? (
                     <>
-                      <ActivityIndicator size="small" color="#fff" style={{ marginRight: 8 }} />
+                      <ActivityIndicator size="small" color="#FFFFFF" style={{ marginRight: 6 }} />
                       <Text style={styles.modalSubmitText}>Đang tạo...</Text>
                     </>
                   ) : (
                     <>
-                      <Ionicons name="arrow-forward" size={18} color="#fff" style={{ marginRight: 6 }} />
-                      <Text style={styles.modalSubmitText}>Bắt đầu ngay</Text>
+                      <Feather name="arrow-right" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                      <Text style={styles.modalSubmitText}>Tiếp tục</Text>
                     </>
                   )}
                 </Pressable>
@@ -618,10 +982,11 @@ export default function HomeScreen(): React.JSX.Element {
           </View>
         </Modal>
 
-        {/* Modal cấu hình AI Engine (Gemini & Local) */}
+        {/* Modal cấu hình AI Engine */}
         <AIConfigModal
           visible={aiConfigModalVisible}
           onClose={() => setAiConfigModalVisible(false)}
+          onConfigUpdated={(cfg) => setAiConfig(cfg)}
         />
 
       </View>
@@ -630,42 +995,62 @@ export default function HomeScreen(): React.JSX.Element {
 }
 
 // ===========================================================================
-// SUB-COMPONENT: MeetingCard
+// SUB-COMPONENT: MeetingCardItem (High-Density Scannable Row)
 // ===========================================================================
-interface MeetingCardProps {
+interface MeetingCardItemProps {
   meeting: MeetingSummary;
+  cfg: { label: string; color: string; bg: string; border: string; icon: keyof typeof Feather.glyphMap };
+  palette: any;
   onPress: () => void;
   onDelete: () => void;
+  onDownloadDoc: () => void;
 }
 
-function MeetingCard({ meeting, onPress, onDelete }: MeetingCardProps): React.JSX.Element {
-  const cfg = STATUS_CONFIG[meeting.status] ?? STATUS_CONFIG.created;
+function MeetingCardItem({
+  meeting,
+  cfg,
+  palette,
+  onPress,
+  onDelete,
+  onDownloadDoc,
+}: MeetingCardItemProps): React.JSX.Element {
   const [isHovered, setIsHovered] = useState(false);
+
+  const hasTasks = typeof meeting.task_count === "number" && meeting.task_count > 0;
+  const isAllTasksDone = hasTasks && meeting.completed_task_count === meeting.task_count;
 
   return (
     <Pressable
       onPress={onPress}
-      // @ts-ignore onMouseEnter & onMouseLeave cho web
+      // @ts-ignore
       onMouseEnter={() => setIsHovered(true)}
       onMouseLeave={() => setIsHovered(false)}
       style={({ pressed }) => [
         cardStyles.container,
-        isHovered && cardStyles.containerHovered,
+        {
+          backgroundColor: isHovered ? palette.surfaceHover : palette.card,
+          borderColor: isHovered ? palette.accent : palette.border,
+        },
         pressed && cardStyles.containerPressed,
       ]}
     >
       {/* Icon trạng thái */}
       <View style={[cardStyles.statusIconWrapper, { backgroundColor: cfg.bg, borderColor: cfg.border }]}>
-        <Ionicons name={cfg.icon} size={22} color={cfg.color} />
+        <Feather name={cfg.icon} size={18} color={cfg.color} />
       </View>
 
       {/* Nội dung trung tâm */}
       <View style={cardStyles.content}>
-        <View style={cardStyles.titleRow}>
-          <Text style={cardStyles.title} numberOfLines={1}>
-            {meeting.title}
+        <Text style={[cardStyles.title, { color: palette.textPrimary }]} numberOfLines={1}>
+          {meeting.title}
+        </Text>
+
+        {/* 1-Line Snippet Preview */}
+        {meeting.summary_snippet ? (
+          <Text style={[cardStyles.snippetText, { color: palette.textMuted }]} numberOfLines={1}>
+            {meeting.summary_snippet}
           </Text>
-        </View>
+        ) : null}
 
         <View style={cardStyles.metaRow}>
           {/* Badge trạng thái */}
@@ -676,21 +1061,77 @@ function MeetingCard({ meeting, onPress, onDelete }: MeetingCardProps): React.JS
             </Text>
           </View>
 
+          {/* Mã định danh biên bản */}
+          <View style={[cardStyles.codeBadge, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+            <Text style={[cardStyles.codeText, { color: palette.textSecondary }]}>
+              #{String(meeting.id).padStart(4, "0")}/BB-CH
+            </Text>
+          </View>
+
           {/* Ngày tạo */}
           <View style={cardStyles.dateBadge}>
-            <Ionicons name="time-outline" size={12} color="#64748b" style={{ marginRight: 4 }} />
-            <Text style={cardStyles.dateText}>{formatDate(meeting.created_at)}</Text>
+            <Feather name="clock" size={11} color={palette.textMuted} style={{ marginRight: 4 }} />
+            <Text style={[cardStyles.dateText, { color: palette.textMuted }]}>
+              {formatDate(meeting.created_at)}
+            </Text>
           </View>
+
+          {/* Mini Progress Badge nhiệm vụ */}
+          {hasTasks ? (
+            <View
+              style={[
+                cardStyles.taskBadge,
+                isAllTasksDone
+                  ? { backgroundColor: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.25)" }
+                  : { backgroundColor: "rgba(37, 99, 235, 0.1)", borderColor: "rgba(37, 99, 235, 0.25)" },
+              ]}
+            >
+              <Feather
+                name={isAllTasksDone ? "check-circle" : "check-square"}
+                size={11}
+                color={isAllTasksDone ? "#10B981" : "#2563EB"}
+                style={{ marginRight: 4 }}
+              />
+              <Text
+                style={[
+                  cardStyles.taskBadgeText,
+                  { color: isAllTasksDone ? "#10B981" : "#2563EB" },
+                ]}
+              >
+                {meeting.completed_task_count ?? 0}/{meeting.task_count} nhiệm vụ
+              </Text>
+            </View>
+          ) : null}
         </View>
       </View>
 
       {/* Cụm hành động bên phải */}
       <View style={cardStyles.actionsRow}>
-        <View style={cardStyles.viewButton}>
-          <Text style={cardStyles.viewButtonText}>
-            {meeting.status === "completed" ? "Xem kết quả" : meeting.status === "processing" ? "Theo dõi" : "Ghi âm"}
+        {/* Nút tải nhanh file Word .doc (chỉ hiện khi đã có biên bản hoàn tất) */}
+        {meeting.status === "completed" ? (
+          <Pressable
+            onPress={(e) => {
+              e.stopPropagation?.();
+              onDownloadDoc();
+            }}
+            hitSlop={6}
+            accessibilityLabel="Tải nhanh file Word .doc"
+            style={({ pressed }) => [
+              cardStyles.docDownloadBtn,
+              { backgroundColor: palette.surface, borderColor: palette.border },
+              pressed && cardStyles.deleteButtonPressed,
+            ]}
+          >
+            <Feather name="download" size={12} color={palette.accent} style={{ marginRight: 4 }} />
+            <Text style={[cardStyles.docDownloadText, { color: palette.accent }]}>Tải .doc</Text>
+          </Pressable>
+        ) : null}
+
+        <View style={[cardStyles.viewButton, { backgroundColor: palette.surface, borderColor: palette.border }]}>
+          <Text style={[cardStyles.viewButtonText, { color: palette.accent }]}>
+            {meeting.status === "completed" ? "Xem biên bản" : meeting.status === "processing" ? "Theo dõi" : "Ghi âm"}
           </Text>
-          <Ionicons name="chevron-forward" size={16} color="#818cf8" />
+          <Feather name="chevron-right" size={14} color={palette.accent} />
         </View>
 
         {/* Nút Xóa */}
@@ -699,10 +1140,14 @@ function MeetingCard({ meeting, onPress, onDelete }: MeetingCardProps): React.JS
             e.stopPropagation?.();
             onDelete();
           }}
-          hitSlop={10}
-          style={({ pressed }) => [cardStyles.deleteButton, pressed && cardStyles.deleteButtonPressed]}
+          hitSlop={8}
+          style={({ pressed }) => [
+            cardStyles.deleteButton,
+            { backgroundColor: palette.surface, borderColor: palette.border },
+            pressed && cardStyles.deleteButtonPressed,
+          ]}
         >
-          <Ionicons name="trash-outline" size={16} color="#f87171" />
+          <Feather name="trash-2" size={14} color="#EF4444" />
         </Pressable>
       </View>
     </Pressable>
@@ -715,15 +1160,14 @@ function MeetingCard({ meeting, onPress, onDelete }: MeetingCardProps): React.JS
 const styles = StyleSheet.create({
   safeArea: {
     flex: 1,
-    backgroundColor: "#090D16",
   },
   mainContainer: {
     flex: 1,
     width: "100%",
-    maxWidth: 1120,
+    maxWidth: 1100,
     alignSelf: "center",
-    paddingHorizontal: 20,
-    paddingTop: 12,
+    paddingHorizontal: 18,
+    paddingTop: 10,
   },
 
   /* Header */
@@ -731,270 +1175,200 @@ const styles = StyleSheet.create({
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingBottom: 16,
+    paddingBottom: 14,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255, 255, 255, 0.06)",
-    marginBottom: 18,
+    marginBottom: 16,
     flexWrap: "wrap",
     gap: 12,
   },
   headerLeft: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 14,
+    gap: 12,
     flex: 1,
-    minWidth: 280,
+    minWidth: 260,
   },
   logoBadge: {
-    width: 44,
-    height: 44,
-    borderRadius: 14,
-    backgroundColor: "rgba(99, 102, 241, 0.16)",
+    width: 38,
+    height: 38,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(99, 102, 241, 0.35)",
     alignItems: "center",
     justifyContent: "center",
   },
   appTitle: {
-    color: "#f8fafc",
-    fontSize: 22,
-    fontWeight: "800",
-    letterSpacing: -0.5,
+    fontSize: 18,
+    fontWeight: "700",
+    letterSpacing: -0.3,
   },
-  aiTag: {
-    backgroundColor: "rgba(99, 102, 241, 0.2)",
-    paddingHorizontal: 8,
-    paddingVertical: 2,
-    borderRadius: 6,
+  hybridTag: {
+    paddingHorizontal: 6,
+    paddingVertical: 1,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: "rgba(129, 140, 248, 0.4)",
   },
-  aiTagText: {
-    color: "#a5b4fc",
-    fontSize: 10,
-    fontWeight: "800",
-    letterSpacing: 0.5,
+  hybridTagText: {
+    fontSize: 9,
+    fontWeight: "700",
+    letterSpacing: 0.6,
   },
   appSubtitle: {
-    color: "#94a3b8",
-    fontSize: 13,
+    fontSize: 12,
     marginTop: 2,
   },
   headerRight: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
     flexWrap: "wrap",
   },
-  engineBadge: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 6,
-    backgroundColor: "rgba(52, 211, 153, 0.08)",
-    borderWidth: 1,
-    borderColor: "rgba(52, 211, 153, 0.25)",
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 20,
-  },
-  engineDot: {
-    width: 7,
-    height: 7,
-    borderRadius: 4,
-    backgroundColor: "#34d399",
-    shadowColor: "#34d399",
-    shadowOffset: { width: 0, height: 0 },
-    shadowOpacity: 0.8,
-    shadowRadius: 6,
-  },
-  engineText: {
-    color: "#86efac",
-    fontSize: 11,
-    fontWeight: "600",
-  },
   iconButton: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
-    backgroundColor: "#111827",
+    width: 34,
+    height: 34,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "#1e293b",
     alignItems: "center",
     justifyContent: "center",
   },
   headerCtaButton: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 12,
-    shadowColor: "#6366f1",
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.35,
-    shadowRadius: 10,
+    gap: 6,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
   headerCtaText: {
-    color: "#ffffff",
-    fontWeight: "700",
-    fontSize: 14,
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
   },
 
-  /* Stats Dashboard */
+  /* Stats Bento Row */
   statsRow: {
     flexDirection: "row",
-    gap: 10,
-    marginBottom: 18,
+    gap: 8,
+    marginBottom: 16,
     flexWrap: "wrap",
   },
   statCard: {
     flex: 1,
-    minWidth: 140,
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    padding: 14,
+    minWidth: 130,
+    borderRadius: 8,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.06)",
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   statIconBox: {
-    width: 38,
-    height: 38,
-    borderRadius: 10,
+    width: 32,
+    height: 32,
+    borderRadius: 6,
     alignItems: "center",
     justifyContent: "center",
   },
   statNumber: {
-    color: "#f8fafc",
-    fontSize: 18,
-    fontWeight: "800",
+    fontSize: 16,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
   },
   statLabel: {
-    color: "#64748b",
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 1,
   },
 
   /* Search & Filters */
   filterSection: {
-    marginBottom: 16,
-    gap: 12,
+    marginBottom: 14,
+    gap: 10,
   },
   searchBar: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#111827",
-    borderRadius: 12,
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
     borderWidth: 1,
-    borderColor: "#1e293b",
   },
   searchInput: {
     flex: 1,
-    color: "#f8fafc",
-    fontSize: 14,
+    fontSize: 13,
     padding: 0,
   },
   filterTabs: {
     flexDirection: "row",
-    gap: 8,
+    gap: 6,
     flexWrap: "wrap",
   },
   filterChip: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 20,
-    backgroundColor: "#111827",
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  filterChipActive: {
-    backgroundColor: "rgba(99, 102, 241, 0.2)",
-    borderColor: "#6366f1",
   },
   filterChipText: {
-    color: "#94a3b8",
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "500",
   },
-  filterChipTextActive: {
-    color: "#a5b4fc",
-    fontWeight: "700",
-  },
   filterChipCount: {
-    backgroundColor: "#1e293b",
-    paddingHorizontal: 6,
+    paddingHorizontal: 5,
     paddingVertical: 1,
-    borderRadius: 10,
-  },
-  filterChipCountActive: {
-    backgroundColor: "#6366f1",
+    borderRadius: 4,
   },
   filterChipCountText: {
-    color: "#64748b",
-    fontSize: 11,
+    fontSize: 10,
     fontWeight: "600",
-  },
-  filterChipCountTextActive: {
-    color: "#ffffff",
+    fontVariant: ["tabular-nums"],
   },
 
   /* List */
   listContent: {
-    paddingBottom: 60,
+    paddingBottom: 40,
   },
 
   /* Empty State */
   emptyContainer: {
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 60,
-    paddingHorizontal: 20,
+    paddingVertical: 48,
+    paddingHorizontal: 16,
   },
   emptyIconBox: {
-    width: 80,
-    height: 80,
-    borderRadius: 24,
-    backgroundColor: "#111827",
+    width: 64,
+    height: 64,
+    borderRadius: 12,
     borderWidth: 1,
-    borderColor: "#1e293b",
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 16,
+    marginBottom: 14,
   },
   emptyTitle: {
-    color: "#f8fafc",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 8,
+    fontSize: 15,
+    fontWeight: "600",
+    marginBottom: 6,
   },
   emptySubtitle: {
-    color: "#64748b",
-    fontSize: 14,
+    fontSize: 13,
     textAlign: "center",
-    maxWidth: 420,
-    lineHeight: 22,
-    marginBottom: 20,
+    maxWidth: 380,
+    lineHeight: 18,
+    marginBottom: 16,
   },
   emptyCreateButton: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 20,
-    paddingVertical: 12,
-    borderRadius: 14,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
   emptyCreateButtonText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 14,
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
   },
 
   /* Loading & Error */
@@ -1002,223 +1376,297 @@ const styles = StyleSheet.create({
     flex: 1,
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 80,
+    paddingVertical: 60,
   },
   loadingText: {
-    color: "#94a3b8",
-    marginTop: 14,
-    fontSize: 14,
+    marginTop: 12,
+    fontSize: 13,
   },
   errorIconBox: {
-    width: 60,
-    height: 60,
-    borderRadius: 18,
-    backgroundColor: "rgba(248, 113, 113, 0.12)",
+    width: 48,
+    height: 48,
+    borderRadius: 10,
     alignItems: "center",
     justifyContent: "center",
-    marginBottom: 12,
+    marginBottom: 10,
   },
   errorTitle: {
-    color: "#f87171",
-    fontSize: 18,
-    fontWeight: "700",
-    marginBottom: 6,
+    color: "#EF4444",
+    fontSize: 16,
+    fontWeight: "600",
+    marginBottom: 4,
   },
   errorMessage: {
-    color: "#94a3b8",
-    fontSize: 14,
+    fontSize: 13,
     textAlign: "center",
-    maxWidth: 380,
-    lineHeight: 20,
-    marginBottom: 16,
+    maxWidth: 360,
+    lineHeight: 18,
+    marginBottom: 14,
   },
   primaryButton: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 18,
-    paddingVertical: 10,
-    borderRadius: 12,
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 8,
   },
   primaryButtonText: {
-    color: "#fff",
+    color: "#FFFFFF",
     fontWeight: "600",
-    fontSize: 14,
+    fontSize: 13,
   },
 
   /* FAB */
   fabContainer: {
     position: "absolute",
-    bottom: 24,
-    right: 24,
+    bottom: 20,
+    right: 20,
   },
   fabButton: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 20,
-    paddingVertical: 14,
-    borderRadius: 24,
-    shadowColor: "#6366f1",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.5,
-    shadowRadius: 14,
+    gap: 6,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
   },
   fabText: {
-    color: "#fff",
-    fontWeight: "700",
-    fontSize: 15,
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
   },
 
   /* Modal */
   modalOverlay: {
     flex: 1,
-    backgroundColor: "rgba(4, 7, 15, 0.82)",
+    backgroundColor: "rgba(12, 14, 18, 0.75)",
     alignItems: "center",
     justifyContent: "center",
-    padding: 20,
+    padding: 16,
   },
   modalCard: {
     width: "100%",
-    maxWidth: 520,
-    backgroundColor: "#111827",
-    borderRadius: 20,
-    padding: 24,
+    maxWidth: 480,
+    borderRadius: 10,
+    padding: 18,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.1)",
-    shadowColor: "#000",
-    shadowOffset: { width: 0, height: 20 },
-    shadowOpacity: 0.6,
-    shadowRadius: 30,
   },
   modalHeader: {
     flexDirection: "row",
     alignItems: "flex-start",
     justifyContent: "space-between",
-    marginBottom: 18,
+    paddingBottom: 14,
+    marginBottom: 14,
+    borderBottomWidth: 1,
   },
   modalTitleRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 12,
+    gap: 10,
   },
   modalIconBox: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "rgba(99, 102, 241, 0.16)",
+    width: 34,
+    height: 34,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
   },
   modalTitle: {
-    color: "#f8fafc",
-    fontSize: 18,
-    fontWeight: "800",
+    fontSize: 15,
+    fontWeight: "700",
   },
   modalSubtitle: {
-    color: "#64748b",
-    fontSize: 12,
+    fontSize: 11,
     marginTop: 2,
   },
   modalCloseButton: {
     padding: 4,
   },
   suggestionsTitle: {
-    color: "#94a3b8",
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: "600",
-    marginBottom: 8,
+    marginBottom: 6,
   },
   suggestionsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
-    marginBottom: 18,
+    gap: 6,
+    marginBottom: 14,
   },
   suggestionChip: {
-    backgroundColor: "#1E293B",
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 8,
+    paddingHorizontal: 10,
+    paddingVertical: 5,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#334155",
   },
   chipPressed: {
-    backgroundColor: "#334155",
+    opacity: 0.7,
   },
   suggestionText: {
-    color: "#a5b4fc",
-    fontSize: 12,
+    fontSize: 11,
   },
   inputLabel: {
-    color: "#cbd5e1",
-    fontSize: 13,
+    fontSize: 12,
     fontWeight: "600",
     marginBottom: 6,
   },
   modalInput: {
-    backgroundColor: "#0F172A",
-    borderRadius: 12,
-    paddingHorizontal: 16,
-    paddingVertical: 12,
-    color: "#f8fafc",
-    fontSize: 15,
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    fontSize: 13,
     borderWidth: 1,
-    borderColor: "#334155",
-  },
-  modalInputActive: {
-    borderColor: "#6366f1",
-  },
-  modalInputError: {
-    borderColor: "#f87171",
   },
   errorRow: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    marginTop: 8,
+    marginTop: 6,
   },
   errorRowText: {
-    color: "#f87171",
+    color: "#EF4444",
     fontSize: 12,
   },
   modalActions: {
     flexDirection: "row",
-    gap: 12,
-    marginTop: 10,
+    gap: 8,
+    marginTop: 6,
   },
   modalCancelButton: {
     flex: 1,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: "#1E293B",
+    paddingVertical: 9,
+    borderRadius: 8,
     alignItems: "center",
     borderWidth: 1,
-    borderColor: "#334155",
   },
   modalCancelText: {
-    color: "#94a3b8",
-    fontWeight: "600",
-    fontSize: 14,
+    fontWeight: "500",
+    fontSize: 13,
   },
   modalSubmitButton: {
     flex: 2,
-    paddingVertical: 12,
-    borderRadius: 12,
-    backgroundColor: "#4f46e5",
+    paddingVertical: 9,
+    borderRadius: 8,
     alignItems: "center",
     justifyContent: "center",
     flexDirection: "row",
   },
   modalSubmitText: {
-    color: "#ffffff",
-    fontWeight: "700",
-    fontSize: 14,
+    color: "#FFFFFF",
+    fontWeight: "600",
+    fontSize: 13,
   },
-
   buttonPressed: {
     opacity: 0.8,
+  },
+
+  /* 2-Column Desktop Layout */
+  workspaceRow: {
+    flex: 1,
+    flexDirection: Platform.OS === "web" ? "row" : "column",
+    gap: 18,
+  },
+  mainColumn: {
+    flex: 1,
+    minWidth: 0,
+  },
+  sidebarCol: {
+    width: 320,
+    gap: 14,
+    flexShrink: 0,
+  },
+  sidebarCard: {
+    borderRadius: 8,
+    borderWidth: 1,
+    padding: 14,
+    gap: 12,
+  },
+  sidebarCardHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+  },
+  sidebarCardIcon: {
+    width: 30,
+    height: 30,
+    borderRadius: 6,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sidebarCardTitle: {
+    fontSize: 13,
+    fontWeight: "600",
+  },
+  sidebarCardSub: {
+    fontSize: 11,
+    marginTop: 1,
+  },
+  dropzoneBox: {
+    borderWidth: 1,
+    borderStyle: "dashed",
+    borderRadius: 8,
+    padding: 18,
+    alignItems: "center",
+    justifyContent: "center",
+    gap: 6,
+  },
+  dropzoneTitle: {
+    fontSize: 12,
+    fontWeight: "600",
+  },
+  dropzoneHint: {
+    fontSize: 11,
+    textAlign: "center",
+  },
+  sidebarLoadingBox: {
+    paddingVertical: 20,
+    alignItems: "center",
+  },
+  emptyTasksBox: {
+    paddingVertical: 18,
+    alignItems: "center",
+    gap: 6,
+  },
+  emptyTasksText: {
+    fontSize: 11,
+    textAlign: "center",
+  },
+  taskItemCard: {
+    borderRadius: 6,
+    borderWidth: 1,
+    padding: 9,
+    gap: 5,
+  },
+  taskItemHeader: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 6,
+  },
+  taskStatusDot: {
+    width: 6,
+    height: 6,
+    borderRadius: 3,
+    marginTop: 5,
+    flexShrink: 0,
+  },
+  taskItemTitle: {
+    fontSize: 12,
+    fontWeight: "500",
+    flex: 1,
+    lineHeight: 16,
+  },
+  taskItemMeta: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingLeft: 12,
+  },
+  taskMeetingCode: {
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  taskDueDate: {
+    fontSize: 10,
   },
 });
 
@@ -1226,31 +1674,20 @@ const styles = StyleSheet.create({
 const cardStyles = StyleSheet.create({
   container: {
     width: "100%",
-    backgroundColor: "#111827",
-    borderRadius: 16,
-    padding: 16,
+    borderRadius: 8,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "rgba(255, 255, 255, 0.07)",
     flexDirection: "row",
     alignItems: "center",
-    gap: 16,
-  },
-  containerHovered: {
-    backgroundColor: "#1E293B",
-    borderColor: "rgba(99, 102, 241, 0.4)",
-    transform: [{ translateY: -2 }],
-    shadowColor: "#6366f1",
-    shadowOffset: { width: 0, height: 6 },
-    shadowOpacity: 0.15,
-    shadowRadius: 14,
+    gap: 12,
   },
   containerPressed: {
     opacity: 0.85,
   },
   statusIconWrapper: {
-    width: 48,
-    height: 48,
-    borderRadius: 14,
+    width: 38,
+    height: 38,
+    borderRadius: 8,
     borderWidth: 1,
     alignItems: "center",
     justifyContent: "center",
@@ -1260,83 +1697,112 @@ const cardStyles = StyleSheet.create({
     flex: 1,
     minWidth: 0,
   },
-  titleRow: {
-    marginBottom: 6,
-  },
   title: {
-    color: "#f8fafc",
-    fontSize: 16,
-    fontWeight: "700",
-    letterSpacing: -0.2,
+    fontSize: 14,
+    fontWeight: "600",
+    marginBottom: 4,
+  },
+  snippetText: {
+    fontSize: 11,
+    fontStyle: "italic",
+    marginBottom: 6,
+    lineHeight: 15,
   },
   metaRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 8,
     flexWrap: "wrap",
   },
   statusBadge: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    borderRadius: 6,
+    gap: 5,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
     borderWidth: 1,
   },
   statusDot: {
-    width: 6,
-    height: 6,
+    width: 5,
+    height: 5,
     borderRadius: 3,
   },
   statusText: {
-    fontSize: 11,
-    fontWeight: "700",
+    fontSize: 10,
+    fontWeight: "600",
+  },
+  codeBadge: {
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 3,
+    borderWidth: 1,
+  },
+  codeText: {
+    fontSize: 10,
+    fontWeight: "600",
+    fontVariant: ["tabular-nums"],
+  },
+  taskBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+    borderWidth: 1,
+  },
+  taskBadgeText: {
+    fontSize: 10,
+    fontWeight: "600",
   },
   dateBadge: {
     flexDirection: "row",
     alignItems: "center",
   },
   dateText: {
-    color: "#64748b",
-    fontSize: 12,
+    fontSize: 11,
+    fontVariant: ["tabular-nums"],
   },
-
-  /* Actions */
   actionsRow: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 10,
+    gap: 6,
     flexShrink: 0,
+  },
+  docDownloadBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    borderRadius: 6,
+    borderWidth: 1,
+  },
+  docDownloadText: {
+    fontSize: 11,
+    fontWeight: "600",
   },
   viewButton: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "rgba(99, 102, 241, 0.12)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "rgba(99, 102, 241, 0.25)",
   },
   viewButtonText: {
-    color: "#a5b4fc",
-    fontSize: 12,
-    fontWeight: "700",
+    fontSize: 11,
+    fontWeight: "600",
   },
   deleteButton: {
-    width: 34,
-    height: 34,
-    borderRadius: 10,
-    backgroundColor: "#1E293B",
+    width: 30,
+    height: 30,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#334155",
     alignItems: "center",
     justifyContent: "center",
   },
   deleteButtonPressed: {
-    backgroundColor: "rgba(248, 113, 113, 0.2)",
-    borderColor: "#f87171",
+    backgroundColor: "rgba(239, 68, 68, 0.15)",
   },
 });

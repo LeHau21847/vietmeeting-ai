@@ -24,6 +24,18 @@ export interface MeetingSummary {
   status: MeetingStatus;
   audio_file_url: string | null;
   created_at: string; // ISO 8601
+  task_count?: number;
+  completed_task_count?: number;
+  summary_snippet?: string | null;
+}
+
+export interface MeetingAskRequest {
+  question: string;
+}
+
+export interface MeetingAskResponse {
+  answer: string;
+  engine: "gemini" | "local";
 }
 
 // ---------------------------------------------------------------------------

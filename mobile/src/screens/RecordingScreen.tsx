@@ -1,9 +1,13 @@
 /**
  * src/screens/RecordingScreen.tsx
  *
- * AI Studio Workspace – VietMeeting AI
- * Modern SaaS Dashboard with real-time progress tracking, live transcript,
- * responsive 2-column layout (Web) / 1-column (Mobile)
+ * Studio Thu Âm & Soạn Thảo Biên Bản – VietMeeting AI
+ * Thiết kế theo chuẩn Human-Crafted UI:
+ * - Zero-Emoji UI Policy (Feather Vector Icons)
+ * - Swiss Editorial & Linear Palette (Neutral Slate / Zinc & Administrative Navy)
+ * - Bảng điều khiển thu âm phong cách Sony/Zoom Digital Recorder
+ * - Khung soạn thảo Ribbon Office & Xem trước trang giấy A4 chuẩn thể thức
+ * - Tiến trình xử lý AI dạng Technical Stepper
  */
 
 import React, {
@@ -32,7 +36,7 @@ import {
 import { SafeAreaView } from "react-native-safe-area-context";
 import { Audio } from "expo-av";
 import axios, { AxiosError } from "axios";
-import { Ionicons } from "@expo/vector-icons";
+import { Feather } from "@expo/vector-icons";
 import { useNavigation, useRoute } from "@react-navigation/native";
 import type { NativeStackNavigationProp } from "@react-navigation/native-stack";
 import type { RouteProp } from "@react-navigation/native";
@@ -45,12 +49,10 @@ import {
   PROGRESS_POLL_INTERVAL_MS,
 } from "@/constants/api";
 import { AIEngineBadge, AIConfigModal } from "@/components/AIConfigModal";
-import {
+import type {
   AIProcessingResult,
-  AIRewriteBody,
   AIRewriteMode,
   APIErrorResponse,
-  ExtractedTask,
   FontFamilyType,
   MeetingRead,
   PaperThemeType,
@@ -60,9 +62,6 @@ import {
   TextAlignType,
 } from "@/types/meeting";
 
-// ---------------------------------------------------------------------------
-// Types & Options
-// ---------------------------------------------------------------------------
 type NavProp = NativeStackNavigationProp<RootStackParamList, "Recording">;
 type RouteProps = RouteProp<RootStackParamList, "Recording">;
 
@@ -92,9 +91,6 @@ const RECORDING_OPTIONS: Audio.RecordingOptions = {
   },
 };
 
-// ===========================================================================
-// COMPONENT CHÍNH: RecordingScreen
-// ===========================================================================
 export default function RecordingScreen(): React.JSX.Element {
   const navigation = useNavigation<NavProp>();
   const route = useRoute<RouteProps>();
@@ -117,8 +113,8 @@ export default function RecordingScreen(): React.JSX.Element {
   const [progressData, setProgressData] = useState<ProgressData | null>(null);
   const progressPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  // Active Result Tab: "minutes" | "tasks" | "transcript"
-  const [activeTab, setActiveTab] = useState<"minutes" | "tasks" | "transcript">("minutes");
+  // Active Result Tab: "minutes" | "tasks" | "transcript" | "copilot"
+  const [activeTab, setActiveTab] = useState<"minutes" | "tasks" | "transcript" | "copilot">("minutes");
 
   // Modal cấu hình AI
   const [aiConfigModalVisible, setAiConfigModalVisible] = useState(false);
@@ -131,15 +127,15 @@ export default function RecordingScreen(): React.JSX.Element {
   // Animations
   const pulseAnim = useRef(new Animated.Value(1)).current;
   const fadeAnim = useRef(new Animated.Value(0)).current;
-  const slideAnim = useRef(new Animated.Value(30)).current;
+  const slideAnim = useRef(new Animated.Value(20)).current;
   const dotAnim = useRef(new Animated.Value(1)).current;
 
   // Pulse animation for recording
   const startPulse = useCallback(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(pulseAnim, { toValue: 1.18, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
-        Animated.timing(pulseAnim, { toValue: 1, duration: 800, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1.12, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
+        Animated.timing(pulseAnim, { toValue: 1, duration: 900, easing: Easing.inOut(Easing.ease), useNativeDriver: true }),
       ])
     ).start();
   }, [pulseAnim]);
@@ -152,24 +148,22 @@ export default function RecordingScreen(): React.JSX.Element {
   const startDotBlink = useCallback(() => {
     Animated.loop(
       Animated.sequence([
-        Animated.timing(dotAnim, { toValue: 0.2, duration: 500, useNativeDriver: true }),
-        Animated.timing(dotAnim, { toValue: 1, duration: 500, useNativeDriver: true }),
+        Animated.timing(dotAnim, { toValue: 0.25, duration: 600, useNativeDriver: true }),
+        Animated.timing(dotAnim, { toValue: 1, duration: 600, useNativeDriver: true }),
       ])
     ).start();
   }, [dotAnim]);
 
   const animateResultIn = useCallback(() => {
     fadeAnim.setValue(0);
-    slideAnim.setValue(30);
+    slideAnim.setValue(20);
     Animated.parallel([
-      Animated.timing(fadeAnim, { toValue: 1, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
-      Animated.timing(slideAnim, { toValue: 0, duration: 500, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(fadeAnim, { toValue: 1, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
+      Animated.timing(slideAnim, { toValue: 0, duration: 400, easing: Easing.out(Easing.cubic), useNativeDriver: true }),
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  // -------------------------------------------------------------------------
   // Progress Polling
-  // -------------------------------------------------------------------------
   const startProgressPolling = useCallback(() => {
     stopProgressPolling();
     progressPollRef.current = setInterval(async () => {
@@ -180,7 +174,6 @@ export default function RecordingScreen(): React.JSX.Element {
         );
         setProgressData(res.data);
 
-        // If completed or failed, stop polling
         if (res.data.status === "completed" || res.data.status === "failed") {
           stopProgressPolling();
         }
@@ -241,7 +234,7 @@ export default function RecordingScreen(): React.JSX.Element {
       animateResultIn();
     } catch {
       setErrorMessage("Không thể tải lại kết quả cuộc họp.");
-      setErrorDetail("Kiểm tra kết nối Backend và thử lại.");
+      setErrorDetail("Vui lòng kiểm tra kết nối với máy chủ.");
       setScreenState("error");
     } finally {
       setIsLoadingHistory(false);
@@ -261,8 +254,8 @@ export default function RecordingScreen(): React.JSX.Element {
       setHasPermission(granted);
       if (!granted && Platform.OS !== "web") {
         Alert.alert(
-          "⚠️ Cần quyền Microphone",
-          "VietMeeting AI cần quyền Microphone để ghi âm trực tiếp.\nBạn cũng có thể tải file audio có sẵn.",
+          "Yêu cầu quyền Microphone",
+          "VietMeeting AI cần quyền truy cập Microphone để ghi âm trực tiếp. Bạn cũng có thể tải lên tệp âm thanh có sẵn.",
           [
             { text: "Bỏ qua", style: "cancel" },
             { text: "Mở Cài đặt", onPress: () => Linking.openSettings() },
@@ -338,7 +331,7 @@ export default function RecordingScreen(): React.JSX.Element {
       let message = "Không thể bắt đầu ghi âm.";
       if (error instanceof Error) {
         message = error.message.includes("permission")
-          ? "Quyền Microphone bị từ chối."
+          ? "Quyền truy cập Microphone bị từ chối."
           : `Lỗi: ${error.message}`;
       }
       setErrorMessage(message);
@@ -361,9 +354,9 @@ export default function RecordingScreen(): React.JSX.Element {
       await recordingRef.current.stopAndUnloadAsync();
       audioUri = recordingRef.current.getURI();
       recordingRef.current = null;
-      if (!audioUri) throw new Error("Không lấy được URI file ghi âm.");
+      if (!audioUri) throw new Error("Không lấy được đường dẫn tệp âm thanh.");
     } catch (error) {
-      setErrorMessage("Không thể lưu file ghi âm.");
+      setErrorMessage("Không thể lưu tệp ghi âm.");
       setErrorDetail(error instanceof Error ? error.message : String(error));
       setScreenState("error");
       stopProgressPolling();
@@ -386,7 +379,6 @@ export default function RecordingScreen(): React.JSX.Element {
           const file = (e.target as HTMLInputElement).files?.[0];
           if (!file) return;
 
-          // Show file info
           setSelectedFileName(file.name);
           setSelectedFileSize(`${(file.size / (1024 * 1024)).toFixed(1)} MB`);
 
@@ -418,8 +410,8 @@ export default function RecordingScreen(): React.JSX.Element {
       fileInputRef.current.click();
     } else {
       Alert.alert(
-        "Tải file audio",
-        "Trên điện thoại, vui lòng dùng tính năng Ghi âm trực tiếp hoặc cài expo-document-picker.",
+        "Tải lên tệp âm thanh",
+        "Trên thiết bị di động, vui lòng sử dụng tính năng Ghi âm trực tiếp hoặc cài đặt thêm công cụ chọn tệp.",
         [{ text: "Đã hiểu" }]
       );
     }
@@ -461,17 +453,17 @@ export default function RecordingScreen(): React.JSX.Element {
 
   const handleUploadError = (error: unknown) => {
     console.error("[RecordingScreen] Lỗi upload:", error);
-    let userMessage = "Không thể kết nối đến server AI.";
+    let userMessage = "Không thể kết nối đến máy chủ AI.";
     let detail = "";
 
     if (axios.isAxiosError(error)) {
       const axiosError = error as AxiosError<APIErrorResponse>;
       if (axiosError.code === "ECONNABORTED") {
-        userMessage = "AI xử lý quá thời gian quy định (Timeout).";
-        detail = "File ghi âm có thể quá dài. Hãy thử với đoạn ghi ngắn hơn.";
+        userMessage = "Quá thời gian chờ xử lý AI (Timeout).";
+        detail = "Tệp âm thanh có thể quá dài. Vui lòng thử đoạn ghi âm ngắn hơn.";
       } else if (axiosError.code === "ECONNREFUSED" || axiosError.message.includes("Network Error")) {
-        userMessage = "Mất kết nối với Backend Local AI.";
-        detail = "Đảm bảo FastAPI và Ollama (Qwen2.5) đang hoạt động ổn định.";
+        userMessage = "Mất kết nối với Backend.";
+        detail = "Vui lòng đảm bảo FastAPI và engine AI đang hoạt động bình thường.";
       } else if (axiosError.response) {
         const statusCode = axiosError.response.status;
         const resData = axiosError.response.data as any;
@@ -495,20 +487,20 @@ export default function RecordingScreen(): React.JSX.Element {
 
         switch (statusCode) {
           case 400:
-            userMessage = serverMessage || "Định dạng file không được hỗ trợ.";
-            detail = serverDetail || "Hãy thử định dạng .wav, .mp3, .m4a, .webm.";
+            userMessage = serverMessage || "Định dạng tệp âm thanh không được hỗ trợ.";
+            detail = serverDetail || "Hệ thống hỗ trợ các định dạng .wav, .mp3, .m4a, .webm, .flac.";
             break;
           case 404:
-            userMessage = serverMessage || `Không tìm thấy cuộc họp ID #${meetingId}.`;
-            detail = serverDetail || "Vui lòng quay lại trang chủ và tạo cuộc họp mới.";
+            userMessage = serverMessage || `Không tìm thấy cuộc họp mã số #${meetingId}.`;
+            detail = serverDetail || "Vui lòng quay lại màn hình chính và khởi tạo cuộc họp mới.";
             break;
           case 422:
             userMessage = serverMessage || "Không nhận diện được giọng nói trong âm thanh.";
-            detail = serverDetail || "File audio quá nhỏ hoặc âm thanh bị rè, không có tiếng nói rõ ràng.";
+            detail = serverDetail || "Tệp âm thanh quá nhỏ hoặc bị nhiễu không rõ tiếng nói.";
             break;
           case 503:
-            userMessage = serverMessage || "Dịch vụ AI tạm thời không khả dụng (HTTP 503).";
-            detail = serverDetail || "Vui lòng kiểm tra tiến trình Whisper hoặc GPU.";
+            userMessage = serverMessage || "Dịch vụ AI tạm thời gián đoạn (HTTP 503).";
+            detail = serverDetail || "Vui lòng kiểm tra tiến trình mô hình AI hoặc tài nguyên máy tính.";
             break;
           default:
             userMessage = serverMessage || `Lỗi hệ thống (HTTP ${statusCode}).`;
@@ -536,24 +528,18 @@ export default function RecordingScreen(): React.JSX.Element {
     stopProgressPolling();
   };
 
-  // -------------------------------------------------------------------------
-  // Loading History View
-  // -------------------------------------------------------------------------
   if (isLoadingHistory) {
     return (
       <SafeAreaView style={s.loadingContainer}>
-        <ActivityIndicator size="large" color="#6366f1" />
-        <Text style={s.loadingText}>Đang tải biên bản cuộc họp...</Text>
+        <ActivityIndicator size="small" color="#2563EB" />
+        <Text style={s.loadingText}>Đang đọc dữ liệu biên bản cuộc họp...</Text>
       </SafeAreaView>
     );
   }
 
-  // -------------------------------------------------------------------------
-  // Main Render
-  // -------------------------------------------------------------------------
   return (
     <SafeAreaView style={s.safeArea}>
-      <StatusBar barStyle="light-content" backgroundColor="#090D16" />
+      <StatusBar barStyle="light-content" backgroundColor="#0C0E12" />
       <View style={s.mainContainer}>
 
         {/* ================================================================
@@ -563,9 +549,10 @@ export default function RecordingScreen(): React.JSX.Element {
           <View style={s.navLeft}>
             <Pressable
               onPress={() => navigation.goBack()}
+              hitSlop={8}
               style={({ pressed }) => [s.backButton, pressed && s.btnPressed]}
             >
-              <Ionicons name="arrow-back" size={20} color="#94a3b8" />
+              <Feather name="arrow-left" size={18} color="#94A3B8" />
             </Pressable>
             <View style={s.navTitleBox}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
@@ -578,14 +565,13 @@ export default function RecordingScreen(): React.JSX.Element {
               </View>
               <Text style={s.navSubtitle}>
                 {meetingStatus === "completed" || screenState === "success"
-                  ? "Biên bản & Nhiệm vụ đã hoàn tất"
-                  : "AI Studio – Ghi âm & Phân tích Local AI"}
+                  ? "Biên bản & Bảng phân công nhiệm vụ đã hoàn tất"
+                  : "Studio ghi âm & xử lý ngôn ngữ tự nhiên"}
               </Text>
             </View>
           </View>
 
           <View style={s.navRight}>
-            {/* Huy hiệu AI Engine (Gemini / Local) */}
             <AIEngineBadge onPress={() => setAiConfigModalVisible(true)} />
 
             <View style={[
@@ -596,17 +582,17 @@ export default function RecordingScreen(): React.JSX.Element {
             ]}>
               <View style={[
                 s.statusDot,
-                screenState === "recording" && { backgroundColor: "#f87171" },
-                screenState === "processing" && { backgroundColor: "#fbbf24" },
-                screenState === "success" && { backgroundColor: "#34d399" },
+                screenState === "recording" && { backgroundColor: "#EF4444" },
+                screenState === "processing" && { backgroundColor: "#F59E0B" },
+                screenState === "success" && { backgroundColor: "#10B981" },
               ]} />
               <Text style={s.statusPillText}>
                 {screenState === "recording"
                   ? "Đang ghi âm"
                   : screenState === "processing"
-                  ? "AI đang xử lý"
+                  ? "Đang phân tích AI"
                   : screenState === "success"
-                  ? "Đã hoàn thành"
+                  ? "Hoàn tất"
                   : "Sẵn sàng"}
               </Text>
             </View>
@@ -624,37 +610,44 @@ export default function RecordingScreen(): React.JSX.Element {
         >
           <View style={s.grid}>
 
-            {/* ── CỘT TRÁI: Bảng điều khiển ghi âm ── */}
+            {/* ── CỘT TRÁI: Thiết bị thu âm chuyên dụng (Sony/Zoom Recorder) ── */}
             <View style={s.leftCol}>
-              <View style={s.controlCard}>
+              <View style={s.recorderCard}>
 
-                {/* Status indicator row */}
-                <View style={s.heroRow}>
-                  <Animated.View style={{
-                    width: 8, height: 8, borderRadius: 4,
-                    backgroundColor: screenState === "recording" ? "#f87171" : "#6366f1",
-                    opacity: screenState === "recording" ? dotAnim : 1,
-                  }} />
+                {/* Recorder Header & LED indicator */}
+                <View style={s.recorderHeader}>
+                  <View style={s.recorderBrand}>
+                    <Feather name="disc" size={13} color="#64748B" />
+                    <Text style={s.recorderBrandText}>DIGITAL AUDIO RECORDER</Text>
+                  </View>
+                  <View style={s.ledRow}>
+                    <Animated.View style={[
+                      s.ledIndicator,
+                      {
+                        backgroundColor: screenState === "recording" ? "#EF4444" : "#10B981",
+                        opacity: screenState === "recording" ? dotAnim : 1,
+                      }
+                    ]} />
+                    <Text style={s.ledText}>
+                      {screenState === "recording" ? "REC" : "STBY"}
+                    </Text>
+                  </View>
+                </View>
+
+                {/* Big Tabular Digital Counter */}
+                <View style={s.timerDisplay}>
                   <Text style={[
-                    s.heroLabel,
-                    screenState === "recording" && { color: "#f87171" }
+                    s.timerText,
+                    screenState === "recording" && s.timerActive
                   ]}>
-                    {screenState === "recording" ? "ĐANG THU ÂM TRỰC TIẾP" : "THIẾT BỊ SẴN SÀNG"}
+                    {formattedTime}
+                  </Text>
+                  <Text style={s.timerSubtext}>
+                    {screenState === "recording" ? "ĐANG THU ÂM TRỰC TIẾP (16kHz PCM)" : "THỜI LƯỢNG GHI ÂM"}
                   </Text>
                 </View>
 
-                {/* Big Digital Timer */}
-                <Text style={[
-                  s.timerText,
-                  screenState === "recording" && s.timerActive
-                ]}>
-                  {formattedTime}
-                </Text>
-                <Text style={s.timerHint}>
-                  {screenState === "recording" ? "Nhấn nút đỏ để kết thúc và gửi AI" : "Nhấn Micro hoặc Tải file audio"}
-                </Text>
-
-                {/* Record Button with glowing ripple */}
+                {/* Record Button */}
                 <View style={s.micWrap}>
                   {screenState === "recording" && (
                     <Animated.View style={[
@@ -662,10 +655,6 @@ export default function RecordingScreen(): React.JSX.Element {
                       { transform: [{ scale: pulseAnim }] }
                     ]} />
                   )}
-                  <View style={[
-                    s.micAura,
-                    screenState === "recording" && s.micAuraActive
-                  ]} />
                   <Pressable
                     onPress={screenState === "recording" ? handleStopRecording : handleStartRecording}
                     style={({ pressed }) => [
@@ -674,15 +663,15 @@ export default function RecordingScreen(): React.JSX.Element {
                       pressed && s.btnPressed,
                     ]}
                   >
-                    <Ionicons
-                      name={screenState === "recording" ? "stop" : "mic"}
-                      size={46}
-                      color="#ffffff"
+                    <Feather
+                      name={screenState === "recording" ? "square" : "mic"}
+                      size={32}
+                      color="#FFFFFF"
                     />
                   </Pressable>
                 </View>
 
-                {/* Action CTA Button */}
+                {/* Main Action CTA Button */}
                 <Pressable
                   onPress={screenState === "recording" ? handleStopRecording : handleStartRecording}
                   style={({ pressed }) => [
@@ -691,25 +680,25 @@ export default function RecordingScreen(): React.JSX.Element {
                     pressed && s.btnPressed,
                   ]}
                 >
-                  <Ionicons
-                    name={screenState === "recording" ? "stop-circle" : "radio-button-on"}
-                    size={20}
-                    color="#fff"
-                    style={{ marginRight: 8 }}
+                  <Feather
+                    name={screenState === "recording" ? "stop-circle" : "radio"}
+                    size={16}
+                    color="#FFFFFF"
+                    style={{ marginRight: 6 }}
                   />
                   <Text style={s.recActionText}>
-                    {screenState === "recording" ? "Dừng & Phân tích ngay" : "Bắt đầu ghi âm"}
+                    {screenState === "recording" ? "Dừng ghi & Xử lý biên bản" : "Bắt đầu thu âm"}
                   </Text>
                 </Pressable>
 
                 {/* Divider */}
                 <View style={s.dividerRow}>
                   <View style={s.dividerLine} />
-                  <Text style={s.dividerText}>HOẶC</Text>
+                  <Text style={s.dividerText}>HOẶC TẢI TỆP</Text>
                   <View style={s.dividerLine} />
                 </View>
 
-                {/* Upload File Button */}
+                {/* Upload Audio File */}
                 <Pressable
                   onPress={handlePickFile}
                   disabled={screenState === "recording" || screenState === "processing"}
@@ -720,37 +709,37 @@ export default function RecordingScreen(): React.JSX.Element {
                   ]}
                 >
                   <View style={s.uploadIconCircle}>
-                    <Ionicons name="cloud-upload" size={18} color="#818cf8" />
+                    <Feather name="upload" size={16} color="#2563EB" />
                   </View>
                   <View style={{ flex: 1 }}>
-                    <Text style={s.uploadTitle}>Tải file âm thanh có sẵn</Text>
-                    <Text style={s.uploadSub}>.mp3, .wav, .m4a, .webm, .flac – tối đa 200MB (60+ phút)</Text>
+                    <Text style={s.uploadTitle}>Tải lên tệp ghi âm</Text>
+                    <Text style={s.uploadSub}>MP3, WAV, M4A, WebM (tối đa 200MB / 60+ phút)</Text>
                   </View>
-                  <Ionicons name="chevron-forward" size={16} color="#64748b" />
+                  <Feather name="chevron-right" size={15} color="#64748B" />
                 </Pressable>
 
-                {/* Selected file info */}
+                {/* Selected File Info */}
                 {selectedFileName ? (
                   <View style={s.selectedFileBox}>
-                    <Ionicons name="document" size={14} color="#818cf8" />
+                    <Feather name="file" size={13} color="#2563EB" />
                     <Text style={s.selectedFileName} numberOfLines={1}>{selectedFileName}</Text>
                     <Text style={s.selectedFileSize}>{selectedFileSize}</Text>
                   </View>
                 ) : null}
 
-                {/* Feature badges */}
-                <View style={s.featureBox}>
-                  <View style={s.featurePill}>
-                    <Ionicons name="shield-checkmark" size={14} color="#34d399" />
-                    <Text style={s.featurePillText}>Bảo mật nội bộ 100%</Text>
+                {/* Specifications List */}
+                <View style={s.specBox}>
+                  <View style={s.specItem}>
+                    <Feather name="shield" size={13} color="#10B981" />
+                    <Text style={s.specItemText}>Bảo mật dữ liệu nội bộ 100%</Text>
                   </View>
-                  <View style={s.featurePill}>
-                    <Ionicons name="flash" size={14} color="#fbbf24" />
-                    <Text style={s.featurePillText}>faster-whisper + Qwen2.5</Text>
+                  <View style={s.specItem}>
+                    <Feather name="zap" size={13} color="#2563EB" />
+                    <Text style={s.specItemText}>Gemini File API + Whisper int8</Text>
                   </View>
-                  <View style={s.featurePill}>
-                    <Ionicons name="time" size={14} color="#38bdf8" />
-                    <Text style={s.featurePillText}>Hỗ trợ file 60+ phút</Text>
+                  <View style={s.specItem}>
+                    <Feather name="file-text" size={13} color="#94A3B8" />
+                    <Text style={s.specItemText}>Thể thức Nghị định 30/2020/NĐ-CP</Text>
                   </View>
                 </View>
 
@@ -764,41 +753,41 @@ export default function RecordingScreen(): React.JSX.Element {
               {screenState === "idle" && (
                 <View style={s.idleCard}>
                   <View style={s.idleIconBox}>
-                    <Ionicons name="sparkles" size={36} color="#818cf8" />
+                    <Feather name="file-text" size={28} color="#2563EB" />
                   </View>
-                  <Text style={s.idleTitle}>Trung tâm Trí tuệ Nhân tạo</Text>
+                  <Text style={s.idleTitle}>Trung tâm Xử lý & Lập Biên bản</Text>
                   <Text style={s.idleSub}>
-                    Sau khi kết thúc ghi âm hoặc tải file âm thanh, hệ thống sẽ tự động bóc băng tiếng Việt, tóm tắt biên bản và trích xuất danh sách công việc.
+                    Sau khi kết thúc ghi âm hoặc tải tệp âm thanh, hệ thống sẽ tự động bóc băng tiếng Việt, tóm tắt nội dung cuộc họp và lập bảng phân công nhiệm vụ theo chuẩn thể thức hành chính.
                   </Text>
 
                   <View style={s.capList}>
                     <View style={s.capItem}>
                       <View style={s.capBullet}>
-                        <Ionicons name="mic-outline" size={18} color="#818cf8" />
+                        <Feather name="mic" size={16} color="#2563EB" />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={s.capHead}>Nhận diện giọng nói chuẩn xác</Text>
-                        <Text style={s.capBody}>Mô hình faster-whisper tối ưu hóa cho tiếng Việt với VAD lọc im lặng.</Text>
+                        <Text style={s.capHead}>Bóc băng giọng nói tiếng Việt độ chính xác cao</Text>
+                        <Text style={s.capBody}>Kết hợp Gemini Multimodal Audio và faster-whisper tối ưu hóa giọng nói đa vùng miền.</Text>
                       </View>
                     </View>
 
                     <View style={s.capItem}>
                       <View style={s.capBullet}>
-                        <Ionicons name="document-text-outline" size={18} color="#34d399" />
+                        <Feather name="file-text" size={16} color="#10B981" />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={s.capHead}>Biên bản chuyên nghiệp</Text>
-                        <Text style={s.capBody}>Map-Reduce chunking tự động xử lý cuộc họp dài 60+ phút.</Text>
+                        <Text style={s.capHead}>Biên bản chuẩn thể thức hành chính</Text>
+                        <Text style={s.capBody}>Soạn thảo tự động đầy đủ thông tin chung, diễn biến cuộc họp và phần ký duyệt.</Text>
                       </View>
                     </View>
 
                     <View style={s.capItem}>
                       <View style={s.capBullet}>
-                        <Ionicons name="checkbox-outline" size={18} color="#fbbf24" />
+                        <Feather name="check-square" size={16} color="#F59E0B" />
                       </View>
                       <View style={{ flex: 1 }}>
-                        <Text style={s.capHead}>Trích xuất Action Items</Text>
-                        <Text style={s.capBody}>Xác định rõ việc cần làm, người phụ trách và thời hạn.</Text>
+                        <Text style={s.capHead}>Bảng phân công nhiệm vụ chi tiết</Text>
+                        <Text style={s.capBody}>Trích xuất đầu việc cụ thể, đơn vị/cá nhân phụ trách và thời hạn hoàn thành.</Text>
                       </View>
                     </View>
                   </View>
@@ -808,20 +797,19 @@ export default function RecordingScreen(): React.JSX.Element {
               {/* TRẠNG THÁI: RECORDING */}
               {screenState === "recording" && (
                 <View style={s.recFeedbackCard}>
-                  {/* Animated waveform bars */}
                   <View style={s.waveContainer}>
-                    {[...Array(12)].map((_, i) => (
+                    {[...Array(14)].map((_, i) => (
                       <WaveBar key={i} index={i} />
                     ))}
                   </View>
-                  <Text style={s.recFeedTitle}>Đang lắng nghe cuộc họp...</Text>
+                  <Text style={s.recFeedTitle}>Đang ghi âm cuộc họp...</Text>
                   <Text style={s.recFeedSub}>
-                    Hãy nói rõ ràng gần microphone. Sau khi hoàn tất cuộc họp, nhấn "Dừng & Phân tích ngay".
+                    Giữ thiết bị gần người phát biểu. Sau khi kết thúc nội dung cuộc họp, nhấn nút "Dừng ghi & Xử lý biên bản".
                   </Text>
                 </View>
               )}
 
-              {/* TRẠNG THÁI: PROCESSING với LIVE PROGRESS */}
+              {/* TRẠNG THÁI: PROCESSING VỚI TECHNICAL STEPPER */}
               {screenState === "processing" && (
                 <LiveProcessingView progressData={progressData} />
               )}
@@ -830,9 +818,9 @@ export default function RecordingScreen(): React.JSX.Element {
               {screenState === "error" && (
                 <View style={s.errorCard}>
                   <View style={s.errorIconBox}>
-                    <Ionicons name="alert-circle" size={40} color="#f87171" />
+                    <Feather name="alert-triangle" size={28} color="#EF4444" />
                   </View>
-                  <Text style={s.errorTitle}>Xử lý thất bại</Text>
+                  <Text style={s.errorTitle}>Xử lý không thành công</Text>
                   <Text style={s.errorMsg}>{errorMessage}</Text>
                   {errorDetail ? (
                     <Text style={s.errorDtl}>{errorDetail}</Text>
@@ -841,7 +829,7 @@ export default function RecordingScreen(): React.JSX.Element {
                     onPress={handleReset}
                     style={({ pressed }) => [s.retryBtn, pressed && s.btnPressed]}
                   >
-                    <Ionicons name="refresh" size={18} color="#fff" style={{ marginRight: 8 }} />
+                    <Feather name="rotate-cw" size={14} color="#FFFFFF" style={{ marginRight: 6 }} />
                     <Text style={s.retryBtnText}>Thử lại</Text>
                   </Pressable>
                 </View>
@@ -866,7 +854,6 @@ export default function RecordingScreen(): React.JSX.Element {
           </View>
         </ScrollView>
 
-        {/* Modal cấu hình Google Gemini API Key & Engine */}
         <AIConfigModal
           visible={aiConfigModalVisible}
           onClose={() => setAiConfigModalVisible(false)}
@@ -878,14 +865,14 @@ export default function RecordingScreen(): React.JSX.Element {
 }
 
 // ===========================================================================
-// SUB-COMPONENT: WaveBar (Animated waveform bar)
+// SUB-COMPONENT: WaveBar (Waveform animation bar)
 // ===========================================================================
 function WaveBar({ index }: { index: number }): React.JSX.Element {
   const anim = useRef(new Animated.Value(0.3)).current;
 
   useEffect(() => {
-    const delay = index * 80;
-    const duration = 400 + Math.random() * 400;
+    const delay = index * 70;
+    const duration = 400 + Math.random() * 350;
     const animation = Animated.loop(
       Animated.sequence([
         Animated.timing(anim, { toValue: 0.3 + Math.random() * 0.7, duration, delay, useNativeDriver: true }),
@@ -898,59 +885,45 @@ function WaveBar({ index }: { index: number }): React.JSX.Element {
 
   return (
     <Animated.View style={{
-      width: 4,
-      height: 36,
+      width: 3,
+      height: 32,
       borderRadius: 2,
-      backgroundColor: "#f87171",
-      marginHorizontal: 2,
+      backgroundColor: "#EF4444",
+      marginHorizontal: 2.5,
       transform: [{ scaleY: anim }],
     }} />
   );
 }
 
 // ===========================================================================
-// SUB-COMPONENT: LiveProcessingView (Progress stepper + live transcript)
+// SUB-COMPONENT: LiveProcessingView (Technical Stepper)
 // ===========================================================================
 function LiveProcessingView({ progressData }: { progressData: ProgressData | null }): React.JSX.Element {
-  const spinAnim = useRef(new Animated.Value(0)).current;
   const percent = progressData?.progress_percent ?? 0;
-  const stepDetail = progressData?.current_step_detail ?? "Đang kết nối với AI engine...";
+  const stepDetail = progressData?.current_step_detail ?? "Đang thiết lập kết nối với AI engine...";
   const partialTranscript = progressData?.partial_transcript ?? "";
   const status = progressData?.status ?? "uploading";
 
-  useEffect(() => {
-    Animated.loop(
-      Animated.timing(spinAnim, { toValue: 1, duration: 2400, easing: Easing.linear, useNativeDriver: true })
-    ).start();
-  }, [spinAnim]);
-
-  const spin = spinAnim.interpolate({ inputRange: [0, 1], outputRange: ["0deg", "360deg"] });
-
-  // Determine which step is active
   const isTranscribing = status === "transcribing" || (percent >= 5 && percent < 60);
   const isSummarizing = status === "summarizing" || (percent >= 60 && percent < 100);
   const isCompleted = status === "completed";
 
   return (
     <View style={procStyles.container}>
-      {/* Spinning ring + percent */}
-      <View style={procStyles.ringBox}>
-        <View style={procStyles.staticRing} />
-        <Animated.View style={[procStyles.spinRing, { transform: [{ rotate: spin }] }]} />
-        <View style={procStyles.centerPercent}>
-          <Text style={procStyles.percentText}>{percent}%</Text>
+      <View style={procStyles.metricRow}>
+        <View style={procStyles.headerLeft}>
+          <Text style={procStyles.title}>Tiến trình Xử lý AI</Text>
+          <Text style={procStyles.detail}>{stepDetail}</Text>
         </View>
+        <Text style={procStyles.percentText}>{percent}%</Text>
       </View>
 
-      <Text style={procStyles.title}>Local AI đang xử lý...</Text>
-      <Text style={procStyles.detail}>{stepDetail}</Text>
-
-      {/* Smooth progress bar */}
+      {/* Thin Technical Progress Bar */}
       <View style={procStyles.progressBarBg}>
         <View style={[procStyles.progressBarFill, { width: `${Math.min(percent, 100)}%` }]} />
       </View>
 
-      {/* Step indicators */}
+      {/* Stepper list */}
       <View style={procStyles.stepList}>
         <View style={[procStyles.stepItem, isTranscribing && procStyles.stepItemActive]}>
           <View style={[
@@ -959,16 +932,16 @@ function LiveProcessingView({ progressData }: { progressData: ProgressData | nul
             (isSummarizing || isCompleted) && procStyles.stepCircleDone,
           ]}>
             {isSummarizing || isCompleted ? (
-              <Ionicons name="checkmark" size={14} color="#fff" />
+              <Feather name="check" size={13} color="#FFFFFF" />
             ) : isTranscribing ? (
-              <ActivityIndicator size="small" color="#818cf8" />
+              <ActivityIndicator size="small" color="#2563EB" />
             ) : (
               <Text style={procStyles.stepNum}>1</Text>
             )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={procStyles.stepTitle}>Bóc băng âm thanh (STT)</Text>
-            <Text style={procStyles.stepSub}>faster-whisper với VAD trên GPU local</Text>
+            <Text style={procStyles.stepTitle}>Bóc băng âm thanh (STT Engine)</Text>
+            <Text style={procStyles.stepSub}>Nhận diện giọng nói với bộ lọc âm thanh VAD</Text>
           </View>
         </View>
 
@@ -979,16 +952,16 @@ function LiveProcessingView({ progressData }: { progressData: ProgressData | nul
             isCompleted && procStyles.stepCircleDone,
           ]}>
             {isCompleted ? (
-              <Ionicons name="checkmark" size={14} color="#fff" />
+              <Feather name="check" size={13} color="#FFFFFF" />
             ) : isSummarizing ? (
-              <ActivityIndicator size="small" color="#818cf8" />
+              <ActivityIndicator size="small" color="#2563EB" />
             ) : (
               <Text style={procStyles.stepNum}>2</Text>
             )}
           </View>
           <View style={{ flex: 1 }}>
-            <Text style={procStyles.stepTitle}>Phân tích & Tạo biên bản</Text>
-            <Text style={procStyles.stepSub}>Ollama Qwen2.5 Map-Reduce chunking</Text>
+            <Text style={procStyles.stepTitle}>Cấu trúc hóa Biên bản & Phân công nhiệm vụ</Text>
+            <Text style={procStyles.stepSub}>Tổng hợp nội dung theo thể thức Nghị định 30/2020/NĐ-CP</Text>
           </View>
         </View>
       </View>
@@ -997,8 +970,8 @@ function LiveProcessingView({ progressData }: { progressData: ProgressData | nul
       {partialTranscript ? (
         <View style={procStyles.liveTranscriptBox}>
           <View style={procStyles.liveTranscriptHeader}>
-            <Ionicons name="text" size={14} color="#818cf8" />
-            <Text style={procStyles.liveTranscriptTitle}>Bóc băng trực tiếp</Text>
+            <Feather name="file-text" size={13} color="#2563EB" />
+            <Text style={procStyles.liveTranscriptTitle}>Văn bản bóc băng thời gian thực</Text>
             <View style={procStyles.liveDot} />
           </View>
           <ScrollView style={procStyles.liveTranscriptScroll} nestedScrollEnabled>
@@ -1010,7 +983,6 @@ function LiveProcessingView({ progressData }: { progressData: ProgressData | nul
   );
 }
 
-
 // ===========================================================================
 // SUB-COMPONENT: ResultDashboard
 // ===========================================================================
@@ -1018,8 +990,8 @@ interface ResultDashboardProps {
   meetingId: number;
   meetingTitle: string;
   result: AIProcessingResult;
-  activeTab: "minutes" | "tasks" | "transcript";
-  onTabChange: (tab: "minutes" | "tasks" | "transcript") => void;
+  activeTab: "minutes" | "tasks" | "transcript" | "copilot";
+  onTabChange: (tab: "minutes" | "tasks" | "transcript" | "copilot") => void;
   fadeAnim: Animated.Value;
   slideAnim: Animated.Value;
   onRecordNew: () => void;
@@ -1061,7 +1033,55 @@ function ResultDashboard({
   const [savedTranscriptToast, setSavedTranscriptToast] = useState(false);
   const [transcriptSearch, setTranscriptSearch] = useState("");
 
-  // Template Data State (chỉnh sửa trực tiếp trên màn hình)
+  // Grounded Meeting Copilot Q&A States (NotebookLM Pattern)
+  const [copilotQuestion, setCopilotQuestion] = useState("");
+  const [copilotLoading, setCopilotLoading] = useState(false);
+  const [copilotAnswer, setCopilotAnswer] = useState<string | null>(null);
+  const [copilotEngine, setCopilotEngine] = useState<string | null>(null);
+  const [copilotCopied, setCopilotCopied] = useState(false);
+
+  const COPILOT_QUICK_PROMPTS = [
+    "Tóm tắt 3 kết luận quan trọng nhất của cuộc họp?",
+    "Ai được giao những việc gì và hạn chót khi nào?",
+    "Có nội dung nào bất đồng ý kiến hoặc cần xin ý kiến cấp trên?",
+  ];
+
+  const handleAskCopilot = async (customQ?: string) => {
+    const query = (customQ || copilotQuestion).trim();
+    if (!query || copilotLoading) return;
+    setCopilotLoading(true);
+    try {
+      const res = await axios.post<{ answer: string; engine: string }>(
+        API_ENDPOINTS.askMeeting(meetingId),
+        { question: query },
+        { headers: { "Content-Type": "application/json" }, timeout: 60000 }
+      );
+      setCopilotAnswer(res.data.answer);
+      setCopilotEngine(res.data.engine);
+      if (!customQ) setCopilotQuestion("");
+    } catch (err: any) {
+      const msg = err.response?.data?.detail?.message || "Không thể lấy câu trả lời từ trợ lý AI.";
+      Alert.alert("Lỗi Trợ lý AI", typeof msg === "string" ? msg : JSON.stringify(msg));
+    } finally {
+      setCopilotLoading(false);
+    }
+  };
+
+  const handleCopyCopilotAnswer = async (text: string) => {
+    if (Platform.OS === "web") {
+      try {
+        await navigator.clipboard.writeText(text);
+        setCopilotCopied(true);
+        setTimeout(() => setCopilotCopied(false), 2000);
+      } catch {}
+    } else {
+      Clipboard.setString(text);
+      setCopilotCopied(true);
+      setTimeout(() => setCopilotCopied(false), 2000);
+    }
+  };
+
+  // Template Data State
   const [docTitle, setDocTitle] = useState(meetingTitle || "Cuộc họp định kỳ");
   const [docDate, setDocDate] = useState(() => {
     const now = new Date();
@@ -1078,7 +1098,7 @@ function ResultDashboard({
   });
   const [docLocation, setDocLocation] = useState("Phòng họp số 1 / Trực tiếp kết hợp trực tuyến");
   const [docChair, setDocChair] = useState("Đồng chí Chủ trì / Ban Giám đốc");
-  const [docSecretary, setDocSecretary] = useState("Bộ phận Thư ký ghi chép AI");
+  const [docSecretary, setDocSecretary] = useState("Bộ phận Thư ký ghi chép");
   const [docAttendees, setDocAttendees] = useState("Đại diện các cơ quan, đơn vị và đại biểu tham dự");
   const [minutesContent, setMinutesContent] = useState(result.minutes || "");
 
@@ -1091,7 +1111,6 @@ function ResultDashboard({
     }))
   );
 
-  // Sync tasks when result changes
   useEffect(() => {
     if (result.tasks && result.tasks.length > 0) {
       setTasks(
@@ -1104,14 +1123,12 @@ function ResultDashboard({
     }
   }, [result.tasks]);
 
-  // Sync minutes text when result changes
   useEffect(() => {
     if (result.minutes) {
       setMinutesContent(result.minutes);
     }
   }, [result.minutes]);
 
-  // Sync transcript text when result changes
   useEffect(() => {
     if (result.raw_transcript) {
       setTranscriptContent(result.raw_transcript);
@@ -1132,24 +1149,20 @@ function ResultDashboard({
         tableBorder: "#D6CEBE",
         inputBg: "#F5EFE0",
         editorBg: "#F7F2E6",
-        chipActiveBg: "#4F46E5",
-        chipActiveText: "#FFFFFF",
       };
     }
     if (paperTheme === "dark") {
       return {
-        bg: "#0F172A",
+        bg: "#111318",
         text: "#F8FAFC",
         textMuted: "#94A3B8",
-        border: "#334155",
-        headBorder: "#334155",
-        tableHeaderBg: "#1E293B",
-        tableRowEven: "#162032",
-        tableBorder: "#334155",
-        inputBg: "#1E293B",
-        editorBg: "#111827",
-        chipActiveBg: "#6366F1",
-        chipActiveText: "#FFFFFF",
+        border: "#262932",
+        headBorder: "#262932",
+        tableHeaderBg: "#161920",
+        tableRowEven: "#1A1D26",
+        tableBorder: "#262932",
+        inputBg: "#161920",
+        editorBg: "#0C0E12",
       };
     }
     return {
@@ -1163,8 +1176,6 @@ function ResultDashboard({
       tableBorder: "#CBD5E1",
       inputBg: "#F8FAFC",
       editorBg: "#F8FAFC",
-      chipActiveBg: "#4F46E5",
-      chipActiveText: "#FFFFFF",
     };
   }, [paperTheme]);
 
@@ -1187,7 +1198,6 @@ function ResultDashboard({
     }
   };
 
-  // Sao chép text
   const handleCopyText = async (textToCopy: string) => {
     if (Platform.OS === "web") {
       try {
@@ -1202,7 +1212,6 @@ function ResultDashboard({
     }
   };
 
-  // Lưu biên bản vào database (PUT /api/v1/meetings/{id})
   const handleSaveToDB = async () => {
     setIsSaving(true);
     try {
@@ -1217,13 +1226,12 @@ function ResultDashboard({
       setSavedToast(true);
       setTimeout(() => setSavedToast(false), 2500);
     } catch {
-      Alert.alert("Lỗi", "Không thể lưu biên bản lên server. Vui lòng kiểm tra lại kết nối.");
+      Alert.alert("Lỗi", "Không thể lưu biên bản lên máy chủ. Vui lòng thử lại.");
     } finally {
       setIsSaving(false);
     }
   };
 
-  // Lưu bản gỡ băng vào database (PUT /api/v1/meetings/{id})
   const handleSaveTranscriptToDB = async () => {
     setIsSavingTranscript(true);
     try {
@@ -1236,13 +1244,12 @@ function ResultDashboard({
       setTimeout(() => setSavedTranscriptToast(false), 2500);
       setIsEditingTranscript(false);
     } catch {
-      Alert.alert("Lỗi", "Không thể lưu bản gỡ băng lên server.");
+      Alert.alert("Lỗi", "Không thể lưu bản gỡ băng lên máy chủ.");
     } finally {
       setIsSavingTranscript(false);
     }
   };
 
-  // Chèn ký tự định dạng nhanh vào editor
   const insertFormatting = (prefix: string, suffix: string = "") => {
     setMinutesContent((prev) => {
       const needsNewline = prev.length > 0 && !prev.endsWith("\n");
@@ -1250,16 +1257,15 @@ function ResultDashboard({
     });
   };
 
-  // Khôi phục bản gốc ban đầu của AI
   const handleResetMinutes = () => {
     if (Platform.OS === "web") {
-      if (window.confirm("Bạn có chắc chắn muốn khôi phục lại nội dung biên bản ban đầu từ AI? Mọi chỉnh sửa thủ công sẽ được hoàn tác.")) {
+      if (window.confirm("Khôi phục lại nội dung biên bản ban đầu từ AI? Mọi chỉnh sửa thủ công sẽ được hoàn tác.")) {
         setMinutesContent(result.minutes || "");
       }
     } else {
       Alert.alert(
         "Khôi phục bản gốc",
-        "Bạn có chắc muốn hoàn tác mọi chỉnh sửa về văn bản AI ban đầu?",
+        "Bạn có chắc muốn hoàn tác các chỉnh sửa về văn bản AI ban đầu?",
         [
           { text: "Hủy", style: "cancel" },
           { text: "Khôi phục", style: "destructive", onPress: () => setMinutesContent(result.minutes || "") },
@@ -1268,7 +1274,6 @@ function ResultDashboard({
     }
   };
 
-  // Gọi Gemini AI Rewrite Endpoint
   const handleAIRewrite = async (mode: AIRewriteMode, customPrompt?: string) => {
     if (aiRewriteLoading) return;
     setAiRewriteLoading(true);
@@ -1306,9 +1311,9 @@ function ResultDashboard({
       if (mode === "custom") {
         setAiPromptInput("");
       }
-      Alert.alert("✨ Thành công", "Biên bản và nhiệm vụ đã được AI Gemini tái cấu trúc hoàn tất!");
+      Alert.alert("Thông báo", "Biên bản và bảng phân công nhiệm vụ đã được tái cấu trúc thành công.");
     } catch (err: any) {
-      const msg = err.response?.data?.detail || "Không thể thực hiện tái cấu trúc AI. Vui lòng kiểm tra API Key.";
+      const msg = err.response?.data?.detail || "Không thể thực hiện tái cấu trúc AI. Vui lòng kiểm tra lại.";
       Alert.alert("Lỗi AI Studio", typeof msg === "string" ? msg : JSON.stringify(msg));
     } finally {
       setAiRewriteLoading(false);
@@ -1316,9 +1321,7 @@ function ResultDashboard({
     }
   };
 
-  // =========================================================================
-  // XUẤT VÀ TẢI FILE WORD (.DOC) ĐỒNG BỘ 100% PHÔNG CHỮ & ĐỊNH DẠNG
-  // =========================================================================
+  // Xuất file Word (.doc)
   const generateWordHtml = () => {
     const cleanMd = (text: string) =>
       text
@@ -1372,7 +1375,7 @@ function ResultDashboard({
             ${t.description ? `<br/><span style="font-size: 10pt; color: #444; font-style: italic;">${t.description}</span>` : ""}
           </td>
           <td align="center" style="border: 1px solid #000; padding: 6px 8px; font-size: ${tableFontSizePt};">${t.assignee_name || "Các đơn vị liên quan"}</td>
-          <td align="center" style="border: 1px solid #000; padding: 6px 8px; font-size: ${tableFontSizePt};">${t.due_date || "Kế hoạch sắp tới"}</td>
+          <td align="center" style="border: 1px solid #000; padding: 6px 8px; font-size: ${tableFontSizePt};">${t.due_date || "Theo kế hoạch"}</td>
         </tr>
       `).join("\n")
       : `
@@ -1519,7 +1522,6 @@ function ResultDashboard({
 </head>
 <body>
 
-  <!-- Quốc hiệu & Tiêu ngữ -->
   <table class="header-table">
     <tr>
       <td style="width: 45%;">
@@ -1539,7 +1541,6 @@ function ResultDashboard({
   <div class="title-main">BIÊN BẢN CUỘC HỌP</div>
   <div class="title-sub">${docTitle}</div>
 
-  <!-- Mục I. THÔNG TIN CHUNG -->
   <div class="section-head">I. THÔNG TIN CHUNG</div>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>1. Thời gian:</b> ${docTime}.</p>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>2. Địa điểm / Hình thức:</b> ${docLocation}.</p>
@@ -1547,11 +1548,9 @@ function ResultDashboard({
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>4. Thư ký ghi biên bản:</b> ${docSecretary}.</p>
   <p style="text-indent: 1.25cm; margin: 4px 0;"><b>5. Thành phần tham dự:</b> ${docAttendees}.</p>
 
-  <!-- Mục II. NỘI DUNG DIỄN BIẾN CUỘC HỌP -->
   <div class="section-head">II. NỘI DUNG DIỄN BIẾN CUỘC HỌP</div>
   ${minutesParagraphs}
 
-  <!-- Mục III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO -->
   <div class="section-head">III. BẢNG PHÂN CÔNG NHIỆM VỤ / KẾT LUẬN CHỈ ĐẠO</div>
   <table class="data-table">
     <thead>
@@ -1567,14 +1566,13 @@ function ResultDashboard({
     </tbody>
   </table>
 
-  <!-- Phần Chữ ký cuối trang -->
   <table class="sig-table">
     <tr>
       <td>
         <div class="sig-role">THƯ KÝ GHI BIÊN BẢN</div>
         <div class="sig-note">(Ký và ghi rõ họ tên)</div>
         <div class="sig-space"></div>
-        <div><i>(Đã ký điện tử)</i></div>
+        <div><i>(Đã ký xác nhận)</i></div>
       </td>
       <td>
         <div class="sig-role">CHỦ TRÌ CUỘC HỌP</div>
@@ -1627,7 +1625,6 @@ function ResultDashboard({
 
   const completedTasksCount = tasks.filter((t) => t.isDone).length;
 
-  // Tính số lượng từ khóa tìm thấy trong transcript
   const transcriptMatchCount = useMemo(() => {
     if (!transcriptSearch.trim() || !transcriptContent) return 0;
     try {
@@ -1640,21 +1637,21 @@ function ResultDashboard({
     }
   }, [transcriptSearch, transcriptContent]);
 
-  // Component Toolbar Kiểu Chữ & Trình Bày (Dùng chung)
+  // Typography & Document Ribbon Toolbar
   const renderTypographyToolbar = () => (
-    <View style={resStyles.typoCard}>
-      {/* Hàng 1: Chọn Phông Chữ & Giao Diện Giấy */}
-      <View style={resStyles.typoRow}>
-        <View style={resStyles.typoGroup}>
-          <Text style={resStyles.typoLabel}>Phông chữ:</Text>
-          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 6 }}>
+    <View style={resStyles.ribbonToolbar}>
+      {/* Hàng 1: Phông chữ & Nền giấy */}
+      <View style={resStyles.ribbonRow}>
+        <View style={resStyles.ribbonGroup}>
+          <Text style={resStyles.ribbonLabel}>Phông chữ</Text>
+          <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={{ gap: 4 }}>
             {(
               [
-                { id: "Times New Roman" as const, name: "Times New Roman", note: "Nghị định 30" },
-                { id: "Arial" as const, name: "Arial", note: "Rõ nét" },
-                { id: "Roboto" as const, name: "Roboto", note: "Công nghệ" },
-                { id: "Georgia" as const, name: "Georgia", note: "Học thuật" },
-                { id: "Tahoma" as const, name: "Tahoma", note: "Dễ đọc" },
+                { id: "Times New Roman" as const, name: "Times New Roman" },
+                { id: "Arial" as const, name: "Arial" },
+                { id: "Roboto" as const, name: "Roboto" },
+                { id: "Georgia" as const, name: "Georgia" },
+                { id: "Tahoma" as const, name: "Tahoma" },
               ] as const
             ).map((font) => {
               const isSelected = fontFamily === font.id;
@@ -1667,23 +1664,20 @@ function ResultDashboard({
                   <Text style={[resStyles.fontPillText, isSelected && resStyles.fontPillTextActive]}>
                     {font.name}
                   </Text>
-                  <Text style={[resStyles.fontPillNote, isSelected && { color: "#E0E7FF" }]}>
-                    {font.note}
-                  </Text>
                 </Pressable>
               );
             })}
           </ScrollView>
         </View>
 
-        <View style={resStyles.typoGroup}>
-          <Text style={resStyles.typoLabel}>Nền trang:</Text>
-          <View style={{ flexDirection: "row", gap: 6 }}>
+        <View style={resStyles.ribbonGroup}>
+          <Text style={resStyles.ribbonLabel}>Nền giấy</Text>
+          <View style={{ flexDirection: "row", gap: 4 }}>
             {(
               [
-                { id: "white" as const, label: "📄 Trắng A4" },
-                { id: "sepia" as const, label: "📜 Giấy Ngà" },
-                { id: "dark" as const, label: "🌙 Tối Studio" },
+                { id: "white" as const, label: "Trắng A4", icon: "file" as const },
+                { id: "sepia" as const, label: "Giấy ngà", icon: "book-open" as const },
+                { id: "dark" as const, label: "Tối Studio", icon: "moon" as const },
               ] as const
             ).map((theme) => {
               const isSelected = paperTheme === theme.id;
@@ -1691,11 +1685,14 @@ function ResultDashboard({
                 <Pressable
                   key={theme.id}
                   onPress={() => setPaperTheme(theme.id)}
-                  style={[
-                    resStyles.themePill,
-                    isSelected && resStyles.themePillActive,
-                  ]}
+                  style={[resStyles.themePill, isSelected && resStyles.themePillActive]}
                 >
+                  <Feather
+                    name={theme.icon}
+                    size={11}
+                    color={isSelected ? "#2563EB" : "#64748B"}
+                    style={{ marginRight: 4 }}
+                  />
                   <Text style={[resStyles.themePillText, isSelected && resStyles.themePillTextActive]}>
                     {theme.label}
                   </Text>
@@ -1706,19 +1703,18 @@ function ResultDashboard({
         </View>
       </View>
 
-      {/* Hàng 2: Cỡ Chữ, Giãn Dòng & Căn Lề */}
-      <View style={[resStyles.typoRow, { borderTopWidth: 1, borderTopColor: "rgba(255,255,255,0.06)", paddingTop: 10 }]}>
-        {/* Cỡ chữ */}
-        <View style={resStyles.typoGroup}>
-          <Text style={resStyles.typoLabel}>Cỡ chữ:</Text>
-          <View style={{ flexDirection: "row", alignItems: "center", gap: 4 }}>
+      {/* Hàng 2: Cỡ chữ, Giãn dòng, Căn lề */}
+      <View style={[resStyles.ribbonRow, { borderTopWidth: 1, borderTopColor: "#262932", paddingTop: 8 }]}>
+        <View style={resStyles.ribbonGroup}>
+          <Text style={resStyles.ribbonLabel}>Cỡ chữ</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 3 }}>
             <Pressable
               onPress={() => setFontSize((prev) => Math.max(11, prev - 1))}
               style={({ pressed }) => [resStyles.sizeStepperBtn, pressed && resStyles.btnPressed]}
             >
-              <Text style={resStyles.sizeStepperText}>A-</Text>
+              <Text style={resStyles.sizeStepperText}>-</Text>
             </Pressable>
-            {[11, 12, 13, 14, 15, 16].map((s) => {
+            {[11, 12, 13, 14, 16].map((s) => {
               const isSelected = fontSize === s;
               return (
                 <Pressable
@@ -1727,7 +1723,7 @@ function ResultDashboard({
                   style={[resStyles.sizePill, isSelected && resStyles.sizePillActive]}
                 >
                   <Text style={[resStyles.sizePillText, isSelected && resStyles.sizePillTextActive]}>
-                    {s}{s === 13 ? "★" : ""}
+                    {s}pt
                   </Text>
                 </Pressable>
               );
@@ -1736,20 +1732,18 @@ function ResultDashboard({
               onPress={() => setFontSize((prev) => Math.min(16, prev + 1))}
               style={({ pressed }) => [resStyles.sizeStepperBtn, pressed && resStyles.btnPressed]}
             >
-              <Text style={resStyles.sizeStepperText}>A+</Text>
+              <Text style={resStyles.sizeStepperText}>+</Text>
             </Pressable>
           </View>
         </View>
 
-        {/* Giãn dòng */}
-        <View style={resStyles.typoGroup}>
-          <Text style={resStyles.typoLabel}>Giãn dòng:</Text>
-          <View style={{ flexDirection: "row", gap: 4 }}>
+        <View style={resStyles.ribbonGroup}>
+          <Text style={resStyles.ribbonLabel}>Giãn dòng</Text>
+          <View style={{ flexDirection: "row", gap: 3 }}>
             {[
               { val: 1.15, label: "1.15" },
               { val: 1.3, label: "1.30 (Chuẩn)" },
               { val: 1.5, label: "1.50" },
-              { val: 1.8, label: "1.80" },
             ].map((lh) => {
               const isSelected = lineHeight === lh.val;
               return (
@@ -1767,14 +1761,13 @@ function ResultDashboard({
           </View>
         </View>
 
-        {/* Căn lề */}
-        <View style={resStyles.typoGroup}>
-          <Text style={resStyles.typoLabel}>Căn lề:</Text>
-          <View style={{ flexDirection: "row", gap: 4 }}>
+        <View style={resStyles.ribbonGroup}>
+          <Text style={resStyles.ribbonLabel}>Căn lề</Text>
+          <View style={{ flexDirection: "row", gap: 3 }}>
             {[
-              { id: "justify" as const, icon: "reorder-four-outline" as const, label: "Đều" },
-              { id: "left" as const, icon: "reorder-three-outline" as const, label: "Trái" },
-              { id: "center" as const, icon: "reorder-two-outline" as const, label: "Giữa" },
+              { id: "justify" as const, icon: "align-justify" as const, label: "Đều" },
+              { id: "left" as const, icon: "align-left" as const, label: "Trái" },
+              { id: "center" as const, icon: "align-center" as const, label: "Giữa" },
             ].map((align) => {
               const isSelected = textAlign === align.id;
               return (
@@ -1783,12 +1776,12 @@ function ResultDashboard({
                   onPress={() => setTextAlign(align.id)}
                   style={[resStyles.alignBtn, isSelected && resStyles.alignBtnActive]}
                 >
-                  <Ionicons
+                  <Feather
                     name={align.icon}
-                    size={16}
-                    color={isSelected ? "#818cf8" : "#94a3b8"}
+                    size={13}
+                    color={isSelected ? "#2563EB" : "#94A3B8"}
                   />
-                  <Text style={[resStyles.alignBtnText, isSelected && { color: "#a5b4fc" }]}>
+                  <Text style={[resStyles.alignBtnText, isSelected && { color: "#2563EB" }]}>
                     {align.label}
                   </Text>
                 </Pressable>
@@ -1800,38 +1793,38 @@ function ResultDashboard({
     </View>
   );
 
-  // Component AI Text Studio ("✨ Trợ Lý Biên Tập Văn Bản AI")
+  // Component AI Style Switcher (Segmented Control phong cách Linear)
   const renderAITextStudio = () => (
     <View style={resStyles.aiStudioCard}>
       <View style={resStyles.aiStudioHeader}>
         <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-          <View style={resStyles.aiSparkleIcon}>
-            <Ionicons name="sparkles" size={16} color="#818cf8" />
+          <View style={resStyles.aiStudioIconBox}>
+            <Feather name="sliders" size={14} color="#2563EB" />
           </View>
           <View>
-            <Text style={resStyles.aiStudioTitle}>✨ Trợ Lý Biên Tập Văn Bản AI (Powered by Gemini)</Text>
+            <Text style={resStyles.aiStudioTitle}>Phong cách Văn bản AI (Gemini Engine)</Text>
             <Text style={resStyles.aiStudioSub}>
-              Tái cấu trúc biên bản theo văn phong chuyên biệt hoặc ra lệnh tùy ý trong vài giây
+              Tái cấu trúc biên bản theo văn phong hành chính nhà nước hoặc doanh nghiệp
             </Text>
           </View>
         </View>
         {aiRewriteLoading ? (
           <View style={resStyles.aiLoadingBadge}>
-            <ActivityIndicator size="small" color="#818cf8" />
-            <Text style={resStyles.aiLoadingText}>Gemini đang biên tập...</Text>
+            <ActivityIndicator size="small" color="#2563EB" />
+            <Text style={resStyles.aiLoadingText}>Đang biên tập lại...</Text>
           </View>
         ) : null}
       </View>
 
-      {/* Dải nút Preset */}
+      {/* Preset Pill Tabs */}
       <View style={resStyles.aiPresetsRow}>
         {(
           [
-            { mode: "administrative" as const, label: "🏛️ Hành chính Chuẩn", desc: "Nghị định 30" },
-            { mode: "corporate" as const, label: "💼 Doanh nghiệp / Dự án", desc: "KPI & Quyết định" },
-            { mode: "news_digest" as const, label: "📰 Bản tin / Sự kiện", desc: "Chia theo mục tin" },
-            { mode: "concise" as const, label: "⚡ Tóm tắt Ngắn gọn", desc: "Executive 1-Trang" },
-            { mode: "detailed" as const, label: "🔍 Phân tích Chi tiết", desc: "Mở rộng số liệu" },
+            { mode: "administrative" as const, label: "Hành chính (NĐ 30)", icon: "file-text" as const, desc: "Thể thức chuẩn" },
+            { mode: "corporate" as const, label: "Doanh nghiệp", icon: "briefcase" as const, desc: "KPI & Quyết định" },
+            { mode: "news_digest" as const, label: "Bản tin sự kiện", icon: "calendar" as const, desc: "Tóm tắt diễn biến" },
+            { mode: "concise" as const, label: "Tóm tắt 1 trang", icon: "minimize-2" as const, desc: "Báo cáo điều hành" },
+            { mode: "detailed" as const, label: "Bản chi tiết", icon: "maximize-2" as const, desc: "Mở rộng số liệu" },
           ] as const
         ).map((preset) => {
           const isActive = aiActiveMode === preset.mode;
@@ -1846,20 +1839,23 @@ function ResultDashboard({
                 pressed && resStyles.btnPressed,
               ]}
             >
-              <Text style={resStyles.aiPresetLabel}>{preset.label}</Text>
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 5 }}>
+                <Feather name={preset.icon} size={12} color={isActive ? "#2563EB" : "#94A3B8"} />
+                <Text style={[resStyles.aiPresetLabel, isActive && { color: "#2563EB" }]}>{preset.label}</Text>
+              </View>
               <Text style={resStyles.aiPresetDesc}>{preset.desc}</Text>
             </Pressable>
           );
         })}
       </View>
 
-      {/* Thanh Ra Lệnh Tùy Biến (Custom Prompt) */}
+      {/* Custom Prompt Input */}
       <View style={resStyles.aiPromptBar}>
         <TextInput
           value={aiPromptInput}
           onChangeText={setAiPromptInput}
-          placeholder="✨ Nhập yêu cầu tùy chỉnh cho Gemini... (VD: Trích xuất các số liệu thống kê, viết lại kết luận trang trọng...)"
-          placeholderTextColor="#64748b"
+          placeholder="Nhập yêu cầu tùy chỉnh cho AI (VD: Làm rõ các số liệu ngân sách, tổng hợp quyết định quan trọng...)"
+          placeholderTextColor="#64748B"
           style={resStyles.aiPromptInput}
           editable={!aiRewriteLoading}
         />
@@ -1872,7 +1868,7 @@ function ResultDashboard({
             pressed && resStyles.btnPressed,
           ]}
         >
-          <Ionicons name="send" size={14} color="#ffffff" style={{ marginRight: 6 }} />
+          <Feather name="send" size={13} color="#FFFFFF" style={{ marginRight: 5 }} />
           <Text style={resStyles.aiPromptSubmitText}>Thực hiện</Text>
         </Pressable>
       </View>
@@ -1882,16 +1878,16 @@ function ResultDashboard({
   return (
     <Animated.View style={{ opacity: fadeAnim, transform: [{ translateY: slideAnim }] }}>
 
-      {/* Result Top Summary Banner */}
+      {/* Top Completion Summary Banner */}
       <View style={resStyles.topBanner}>
         <View style={resStyles.topBannerLeft}>
           <View style={resStyles.successCircle}>
-            <Ionicons name="checkmark" size={24} color="#34d399" />
+            <Feather name="check" size={18} color="#10B981" />
           </View>
           <View>
-            <Text style={resStyles.topBannerTitle}>Biên bản & Nhiệm vụ đã hoàn tất</Text>
+            <Text style={resStyles.topBannerTitle}>Xử lý thành công</Text>
             <Text style={resStyles.topBannerSub}>
-              Hệ thống đã trích xuất {tasks.length} nhiệm vụ hành động chuẩn xác
+              Hệ thống đã trích xuất {tasks.length} nhiệm vụ và định dạng biên bản hoàn tất
             </Text>
           </View>
         </View>
@@ -1900,17 +1896,18 @@ function ResultDashboard({
           onPress={onRecordNew}
           style={({ pressed }) => [resStyles.newRecBtn, pressed && resStyles.btnPressed]}
         >
-          <Ionicons name="refresh" size={16} color="#818cf8" style={{ marginRight: 6 }} />
-          <Text style={resStyles.newRecBtnText}>Ghi âm phiên mới</Text>
+          <Feather name="rotate-cw" size={13} color="#2563EB" style={{ marginRight: 5 }} />
+          <Text style={resStyles.newRecBtnText}>Phiên ghi mới</Text>
         </Pressable>
       </View>
 
       {/* Tabs Switcher */}
       <View style={resStyles.tabsRow}>
         {[
-          { id: "minutes" as const, label: "Biên bản cuộc họp (Mẫu chuẩn)", icon: "document-text-outline" as const },
-          { id: "tasks" as const, label: `Công việc (${completedTasksCount}/${tasks.length})`, icon: "checkbox-outline" as const },
-          { id: "transcript" as const, label: "Bản gỡ băng", icon: "mic-outline" as const },
+          { id: "minutes" as const, label: "Biên bản cuộc họp", icon: "file-text" as const },
+          { id: "tasks" as const, label: `Bảng phân công nhiệm vụ (${completedTasksCount}/${tasks.length})`, icon: "check-square" as const },
+          { id: "transcript" as const, label: "Bản gỡ băng gốc", icon: "mic" as const },
+          { id: "copilot" as const, label: "Hỏi đáp AI", icon: "message-square" as const },
         ].map((tab) => {
           const isActive = activeTab === tab.id;
           return (
@@ -1919,10 +1916,10 @@ function ResultDashboard({
               onPress={() => onTabChange(tab.id)}
               style={[resStyles.tabBtn, isActive && resStyles.tabBtnActive]}
             >
-              <Ionicons
+              <Feather
                 name={tab.icon}
-                size={16}
-                color={isActive ? "#818cf8" : "#94a3b8"}
+                size={14}
+                color={isActive ? "#2563EB" : "#94A3B8"}
                 style={{ marginRight: 6 }}
               />
               <Text style={[resStyles.tabText, isActive && resStyles.tabTextActive]}>
@@ -1934,41 +1931,38 @@ function ResultDashboard({
       </View>
 
       {/* =====================================================================
-          TAB 1: BIÊN BẢN CUỘC HỌP (KHUNG BIỂU MẪU CHUẨN NGHỊ ĐỊNH 30)
+          TAB 1: BIÊN BẢN CUỘC HỌP (TRANG GIẤY A4 NGHỊ ĐỊNH 30)
       ===================================================================== */}
       {activeTab === "minutes" && (
-        <View style={{ gap: 14 }}>
+        <View style={{ gap: 12 }}>
 
-          {/* AI Text Studio Banner */}
+          {/* AI Style Switcher */}
           {renderAITextStudio()}
 
-          {/* Typography & Document Toolbar */}
+          {/* Ribbon Toolbar */}
           {renderTypographyToolbar()}
 
           {/* Action Toolbar */}
-          <View style={resStyles.toolbarCard}>
-            <View style={resStyles.toolbarLeft}>
-              {/* Primary Download Word Button */}
+          <View style={resStyles.actionToolbarCard}>
+            <View style={resStyles.actionToolbarLeft}>
               <Pressable
                 onPress={handleDownloadWord}
                 style={({ pressed }) => [resStyles.wordDownloadBtn, pressed && resStyles.btnPressed]}
               >
-                <Ionicons name="download" size={18} color="#ffffff" style={{ marginRight: 8 }} />
-                <Text style={resStyles.wordDownloadBtnText}>Tải Biên Bản Word (.DOC)</Text>
+                <Feather name="download" size={15} color="#FFFFFF" style={{ marginRight: 6 }} />
+                <Text style={resStyles.wordDownloadBtnText}>Xuất tệp Word (.doc)</Text>
               </Pressable>
 
-              {/* Print / PDF Button */}
               <Pressable
                 onPress={handlePrint}
                 style={({ pressed }) => [resStyles.toolBtn, pressed && resStyles.btnPressed]}
               >
-                <Ionicons name="print-outline" size={16} color="#cbd5e1" style={{ marginRight: 6 }} />
-                <Text style={resStyles.toolBtnText}>In / Xuất PDF</Text>
+                <Feather name="printer" size={14} color="#CBD5E1" style={{ marginRight: 5 }} />
+                <Text style={resStyles.toolBtnText}>In ấn / PDF</Text>
               </Pressable>
             </View>
 
-            <View style={resStyles.toolbarRight}>
-              {/* Edit / Preview Toggle */}
+            <View style={resStyles.actionToolbarRight}>
               <Pressable
                 onPress={() => setIsEditing(!isEditing)}
                 style={({ pressed }) => [
@@ -1977,45 +1971,53 @@ function ResultDashboard({
                   pressed && resStyles.btnPressed,
                 ]}
               >
-                <Ionicons
-                  name={isEditing ? "eye-outline" : "create-outline"}
-                  size={16}
-                  color={isEditing ? "#818cf8" : "#cbd5e1"}
-                  style={{ marginRight: 6 }}
+                <Feather
+                  name={isEditing ? "eye" : "edit-3"}
+                  size={14}
+                  color={isEditing ? "#2563EB" : "#CBD5E1"}
+                  style={{ marginRight: 5 }}
                 />
-                <Text style={[resStyles.toolBtnText, isEditing && { color: "#a5b4fc" }]}>
-                  {isEditing ? "👁️ Xem mẫu chuẩn" : "✏️ Chỉnh sửa biểu mẫu"}
+                <Text style={[resStyles.toolBtnText, isEditing && { color: "#2563EB" }]}>
+                  {isEditing ? "Xem mẫu chuẩn" : "Chỉnh sửa biểu mẫu"}
                 </Text>
               </Pressable>
 
-              {/* Save Button */}
               <Pressable
                 onPress={handleSaveToDB}
                 disabled={isSaving}
                 style={({ pressed }) => [resStyles.toolBtn, pressed && resStyles.btnPressed]}
               >
                 {isSaving ? (
-                  <ActivityIndicator size="small" color="#34d399" />
+                  <ActivityIndicator size="small" color="#10B981" />
                 ) : (
-                  <Ionicons name={savedToast ? "checkmark-circle" : "save-outline"} size={16} color="#34d399" style={{ marginRight: 6 }} />
+                  <Feather
+                    name={savedToast ? "check" : "save"}
+                    size={14}
+                    color="#10B981"
+                    style={{ marginRight: 5 }}
+                  />
                 )}
-                <Text style={[resStyles.toolBtnText, { color: "#34d399" }]}>
-                  {savedToast ? "Đã lưu!" : "Lưu thay đổi"}
+                <Text style={[resStyles.toolBtnText, { color: "#10B981" }]}>
+                  {savedToast ? "Đã lưu" : "Lưu thay đổi"}
                 </Text>
               </Pressable>
 
-              {/* Copy Text */}
               <Pressable
                 onPress={() => handleCopyText(minutesContent)}
                 style={({ pressed }) => [resStyles.toolBtn, pressed && resStyles.btnPressed]}
               >
-                <Ionicons name={copied ? "checkmark-circle" : "copy-outline"} size={16} color="#818cf8" style={{ marginRight: 6 }} />
-                <Text style={resStyles.toolBtnText}>{copied ? "Đã sao chép!" : "Sao chép"}</Text>
+                <Feather
+                  name={copied ? "check" : "copy"}
+                  size={14}
+                  color="#2563EB"
+                  style={{ marginRight: 5 }}
+                />
+                <Text style={resStyles.toolBtnText}>{copied ? "Đã chép" : "Sao chép"}</Text>
               </Pressable>
             </View>
           </View>
 
-          {/* Quick Formatting Bar khi ở Chế độ Chỉnh sửa */}
+          {/* Quick Formatting Bar */}
           {isEditing && (
             <View style={resStyles.quickFormatCard}>
               <View style={resStyles.quickFormatLeft}>
@@ -2024,7 +2026,7 @@ function ResultDashboard({
                   onPress={() => insertFormatting("**", "**")}
                   style={({ pressed }) => [resStyles.qfBtn, pressed && resStyles.btnPressed]}
                 >
-                  <Text style={[resStyles.qfBtnText, { fontWeight: "900" }]}>B</Text>
+                  <Text style={[resStyles.qfBtnText, { fontWeight: "700" }]}>B</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => insertFormatting("*", "*")}
@@ -2042,7 +2044,7 @@ function ResultDashboard({
                   onPress={() => insertFormatting("• ")}
                   style={({ pressed }) => [resStyles.qfBtn, pressed && resStyles.btnPressed]}
                 >
-                  <Text style={resStyles.qfBtnText}>• Bullet</Text>
+                  <Text style={resStyles.qfBtnText}>• Danh sách</Text>
                 </Pressable>
                 <Pressable
                   onPress={() => insertFormatting("### I. ")}
@@ -2054,7 +2056,7 @@ function ResultDashboard({
                   onPress={() => insertFormatting("\n---\n")}
                   style={({ pressed }) => [resStyles.qfBtn, pressed && resStyles.btnPressed]}
                 >
-                  <Text style={resStyles.qfBtnText}>--- Kẻ ngang</Text>
+                  <Text style={resStyles.qfBtnText}>--- Phân đoạn</Text>
                 </Pressable>
               </View>
 
@@ -2062,13 +2064,13 @@ function ResultDashboard({
                 onPress={handleResetMinutes}
                 style={({ pressed }) => [resStyles.undoResetBtn, pressed && resStyles.btnPressed]}
               >
-                <Ionicons name="refresh-circle-outline" size={16} color="#f87171" style={{ marginRight: 4 }} />
-                <Text style={resStyles.undoResetText}>Khôi phục bản gốc AI</Text>
+                <Feather name="rotate-ccw" size={13} color="#EF4444" style={{ marginRight: 4 }} />
+                <Text style={resStyles.undoResetText}>Khôi phục bản gốc</Text>
               </Pressable>
             </View>
           )}
 
-          {/* DOCUMENT PREVIEW PAPER SHEET (TRANG GIẤY CHUẨN THỂ THỨC HÀNH CHÍNH NGHỊ ĐỊNH 30) */}
+          {/* A4 PAPER SHEET CONTAINER */}
           <View
             style={[
               resStyles.paperSheet,
@@ -2111,7 +2113,7 @@ function ResultDashboard({
                     onChangeText={setDocDate}
                     style={[resStyles.inlineInput, { backgroundColor: themeColors.inputBg, color: themeColors.text, fontFamily }]}
                     placeholder="ngày ... tháng ... năm ..."
-                    placeholderTextColor="#94a3b8"
+                    placeholderTextColor="#94A3B8"
                   />
                 </View>
               ) : (
@@ -2131,8 +2133,8 @@ function ResultDashboard({
                     resStyles.paperSubTitleInput,
                     { backgroundColor: themeColors.inputBg, color: themeColors.text, fontFamily },
                   ]}
-                  placeholder="Nhập tên cuộc họp..."
-                  placeholderTextColor="#94a3b8"
+                  placeholder="Nhập tiêu đề cuộc họp..."
+                  placeholderTextColor="#94A3B8"
                 />
               ) : (
                 <Text style={[resStyles.paperSubTitle, { color: themeColors.textMuted, fontFamily }]}>
@@ -2222,7 +2224,7 @@ function ResultDashboard({
               {isEditing ? (
                 <View style={resStyles.editorBox}>
                   <Text style={[resStyles.editorHint, { color: themeColors.textMuted }]}>
-                    💡 Bạn có thể trực tiếp sửa văn bản bên dưới, dùng thanh công cụ định dạng nhanh trước khi bấm "Lưu thay đổi" hoặc "Tải Biên Bản Word":
+                    Soạn thảo trực tiếp nội dung biên bản dưới đây trước khi bấm "Lưu thay đổi" hoặc "Xuất tệp Word":
                   </Text>
                   <TextInput
                     value={minutesContent}
@@ -2257,7 +2259,6 @@ function ResultDashboard({
                       .replace(/_(.*?)_/g, "$1")
                       .trim();
 
-                    // Header sub (I., II., III. hoặc ##)
                     if (lineTrim.startsWith("#") || lineTrim.match(/^[1-9IVX]+\.\s+/)) {
                       return (
                         <Text
@@ -2277,7 +2278,6 @@ function ResultDashboard({
                       );
                     }
 
-                    // Bullet item
                     if (lineTrim.startsWith("-") || lineTrim.startsWith("*") || lineTrim.startsWith("•")) {
                       const bullet = cleanText.replace(/^[-*•]\s*/, "");
                       return (
@@ -2301,7 +2301,6 @@ function ResultDashboard({
                       );
                     }
 
-                    // Normal paragraph
                     return (
                       <Text
                         key={idx}
@@ -2331,19 +2330,17 @@ function ResultDashboard({
               </Text>
 
               <View style={[resStyles.tableWrapper, { borderColor: themeColors.tableBorder }]}>
-                {/* Table Header */}
                 <View style={[resStyles.tableHeaderRow, { backgroundColor: themeColors.tableHeaderBg, borderBottomColor: themeColors.tableBorder }]}>
-                  <Text style={[resStyles.thCell, { width: 50, textAlign: "center", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>STT</Text>
-                  <Text style={[resStyles.thCell, { flex: 2, color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>Nội dung công việc / Chỉ đạo</Text>
-                  <Text style={[resStyles.thCell, { flex: 1.2, textAlign: "center", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>Đơn vị / Người phụ trách</Text>
-                  <Text style={[resStyles.thCell, { width: 110, textAlign: "center", color: themeColors.text, fontFamily }]}>Thời hạn</Text>
+                  <Text style={[resStyles.thCell, { width: 45, textAlign: "center", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>STT</Text>
+                  <Text style={[resStyles.thCell, { flex: 2, color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>Nội dung nhiệm vụ / Chỉ đạo</Text>
+                  <Text style={[resStyles.thCell, { flex: 1.2, textAlign: "center", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>Đơn vị phụ trách</Text>
+                  <Text style={[resStyles.thCell, { width: 105, textAlign: "center", color: themeColors.text, fontFamily }]}>Thời hạn</Text>
                 </View>
 
-                {/* Table Rows */}
                 {tasks.length === 0 ? (
                   <View style={resStyles.tableEmptyRow}>
                     <Text style={[resStyles.tableEmptyText, { color: themeColors.textMuted, fontFamily }]}>
-                      Không có nhiệm vụ hành động cụ thể nào phát sinh trong cuộc họp.
+                      Không phát sinh nhiệm vụ phân công cụ thể trong cuộc họp.
                     </Text>
                   </View>
                 ) : (
@@ -2356,7 +2353,7 @@ function ResultDashboard({
                         idx % 2 === 1 && { backgroundColor: themeColors.tableRowEven },
                       ]}
                     >
-                      <Text style={[resStyles.tdCell, { width: 50, textAlign: "center", fontWeight: "700", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>
+                      <Text style={[resStyles.tdCell, { width: 45, textAlign: "center", fontWeight: "600", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>
                         {idx + 1}
                       </Text>
                       <View style={[resStyles.tdCell, { flex: 2, borderRightColor: themeColors.tableBorder }]}>
@@ -2368,8 +2365,8 @@ function ResultDashboard({
                       <Text style={[resStyles.tdCell, { flex: 1.2, textAlign: "center", color: themeColors.text, borderRightColor: themeColors.tableBorder, fontFamily }]}>
                         {task.assignee_name || "Các đơn vị liên quan"}
                       </Text>
-                      <Text style={[resStyles.tdCell, { width: 110, textAlign: "center", color: themeColors.text, fontFamily }]}>
-                        {task.due_date || "Kế hoạch sắp tới"}
+                      <Text style={[resStyles.tdCell, { width: 105, textAlign: "center", color: themeColors.text, fontFamily }]}>
+                        {task.due_date || "Theo kế hoạch"}
                       </Text>
                     </View>
                   ))
@@ -2377,13 +2374,13 @@ function ResultDashboard({
               </View>
             </View>
 
-            {/* Phần Chữ ký 2 cột cuối trang */}
+            {/* Phần Chữ ký 2 cột */}
             <View style={[resStyles.sigContainer, { borderTopColor: themeColors.border }]}>
               <View style={resStyles.sigCol}>
                 <Text style={[resStyles.sigRole, { color: themeColors.text, fontFamily }]}>THƯ KÝ GHI BIÊN BẢN</Text>
                 <Text style={[resStyles.sigNote, { color: themeColors.textMuted, fontFamily }]}>(Ký và ghi rõ họ tên)</Text>
                 <View style={resStyles.sigSpace} />
-                <Text style={[resStyles.sigSigned, { fontFamily }]}><i>(Đã ký điện tử)</i></Text>
+                <Text style={[resStyles.sigSigned, { fontFamily }]}><i>(Đã ký xác nhận)</i></Text>
                 <Text style={[resStyles.sigName, { color: themeColors.text, fontFamily }]}>{docSecretary}</Text>
               </View>
 
@@ -2401,27 +2398,27 @@ function ResultDashboard({
       )}
 
       {/* =====================================================================
-          TAB 2: DANH SÁCH NHIỆM VỤ / ACTION ITEMS
+          TAB 2: BẢNG PHÂN CÔNG NHIỆM VỤ
       ===================================================================== */}
       {activeTab === "tasks" && (
         <View style={resStyles.card}>
           <View style={resStyles.cardHeaderRow}>
             <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-              <Ionicons name="checkbox" size={18} color="#818cf8" />
-              <Text style={resStyles.cardHeaderTitle}>Nhiệm vụ cuộc họp & Người chịu trách nhiệm</Text>
+              <Feather name="check-square" size={16} color="#2563EB" />
+              <Text style={resStyles.cardHeaderTitle}>Bảng theo dõi & Phân công nhiệm vụ</Text>
             </View>
             <Text style={resStyles.taskProgress}>
-              Đã hoàn tất {completedTasksCount}/{tasks.length}
+              Hoàn thành {completedTasksCount}/{tasks.length}
             </Text>
           </View>
 
           {tasks.length === 0 ? (
             <View style={resStyles.emptyTasksBox}>
-              <Ionicons name="sparkles-outline" size={32} color="#475569" />
+              <Feather name="inbox" size={28} color="#64748B" />
               <Text style={resStyles.emptyTasksText}>Cuộc họp này không phát sinh nhiệm vụ phân công cụ thể.</Text>
             </View>
           ) : (
-            <View style={{ gap: 10, marginTop: 14 }}>
+            <View style={{ gap: 8, marginTop: 12 }}>
               {tasks.map((task, idx) => (
                 <Pressable
                   key={task.realId ?? idx}
@@ -2433,7 +2430,7 @@ function ResultDashboard({
                   ]}
                 >
                   <View style={[resStyles.taskCheckbox, task.isDone && resStyles.taskCheckboxDone]}>
-                    {task.isDone ? <Ionicons name="checkmark" size={14} color="#ffffff" /> : null}
+                    {task.isDone ? <Feather name="check" size={12} color="#FFFFFF" /> : null}
                   </View>
 
                   <View style={{ flex: 1 }}>
@@ -2447,13 +2444,13 @@ function ResultDashboard({
                     <View style={resStyles.taskMetaRow}>
                       {task.assignee_name ? (
                         <View style={resStyles.taskMetaTag}>
-                          <Ionicons name="person-outline" size={12} color="#818cf8" style={{ marginRight: 4 }} />
+                          <Feather name="user" size={11} color="#60A5FA" style={{ marginRight: 4 }} />
                           <Text style={resStyles.taskMetaText}>{task.assignee_name}</Text>
                         </View>
                       ) : null}
                       {task.due_date ? (
                         <View style={resStyles.taskMetaTag}>
-                          <Ionicons name="calendar-outline" size={12} color="#fbbf24" style={{ marginRight: 4 }} />
+                          <Feather name="calendar" size={11} color="#F59E0B" style={{ marginRight: 4 }} />
                           <Text style={resStyles.taskMetaText}>{task.due_date}</Text>
                         </View>
                       ) : null}
@@ -2467,88 +2464,83 @@ function ResultDashboard({
       )}
 
       {/* =====================================================================
-          TAB 3: BẢN GỠ BĂNG (TRANSCRIPT) VỚI TÌM KIẾM & CHỈNH SỬA
+          TAB 3: BẢN GỠ BĂNG (TRANSCRIPT)
       ===================================================================== */}
       {activeTab === "transcript" && (
-        <View style={{ gap: 14 }}>
-          {/* Typography Toolbar cho Transcript */}
+        <View style={{ gap: 12 }}>
           {renderTypographyToolbar()}
 
           <View style={resStyles.card}>
-            {/* Header Toolbar của Transcript */}
             <View style={resStyles.cardHeaderRow}>
               <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                <Ionicons name="mic" size={18} color="#38bdf8" />
-                <Text style={resStyles.cardHeaderTitle}>Bản gỡ băng chi tiết (Whisper / Gemini STT)</Text>
+                <Feather name="mic" size={16} color="#0284C7" />
+                <Text style={resStyles.cardHeaderTitle}>Bản gỡ băng gốc (Gemini / Whisper STT)</Text>
               </View>
 
-              <View style={{ flexDirection: "row", alignItems: "center", gap: 8 }}>
-                {/* Nút bật tắt chế độ Sửa Transcript */}
+              <View style={{ flexDirection: "row", alignItems: "center", gap: 6 }}>
                 <Pressable
                   onPress={() => setIsEditingTranscript(!isEditingTranscript)}
                   style={({ pressed }) => [
                     resStyles.copyBtn,
-                    isEditingTranscript && { backgroundColor: "rgba(99,102,241,0.25)", borderColor: "#6366f1" },
+                    isEditingTranscript && { backgroundColor: "rgba(37,99,235,0.15)", borderColor: "#2563EB" },
                     pressed && resStyles.btnPressed,
                   ]}
                 >
-                  <Ionicons
-                    name={isEditingTranscript ? "eye-outline" : "create-outline"}
-                    size={14}
-                    color={isEditingTranscript ? "#a5b4fc" : "#818cf8"}
+                  <Feather
+                    name={isEditingTranscript ? "eye" : "edit-3"}
+                    size={13}
+                    color={isEditingTranscript ? "#2563EB" : "#94A3B8"}
                   />
-                  <Text style={[resStyles.copyBtnText, isEditingTranscript && { color: "#c7d2fe" }]}>
-                    {isEditingTranscript ? "👁️ Đọc văn bản" : "✏️ Sửa bản gỡ băng"}
+                  <Text style={[resStyles.copyBtnText, isEditingTranscript && { color: "#2563EB" }]}>
+                    {isEditingTranscript ? "Xem văn bản" : "Chỉnh sửa"}
                   </Text>
                 </Pressable>
 
-                {/* Nút Lưu Transcript vào DB */}
                 {isEditingTranscript && (
                   <Pressable
                     onPress={handleSaveTranscriptToDB}
                     disabled={isSavingTranscript}
-                    style={({ pressed }) => [resStyles.copyBtn, { backgroundColor: "rgba(52,211,153,0.15)" }, pressed && resStyles.btnPressed]}
+                    style={({ pressed }) => [resStyles.copyBtn, { backgroundColor: "rgba(16,185,129,0.12)" }, pressed && resStyles.btnPressed]}
                   >
                     {isSavingTranscript ? (
-                      <ActivityIndicator size="small" color="#34d399" />
+                      <ActivityIndicator size="small" color="#10B981" />
                     ) : (
-                      <Ionicons
-                        name={savedTranscriptToast ? "checkmark-circle" : "save-outline"}
-                        size={14}
-                        color="#34d399"
+                      <Feather
+                        name={savedTranscriptToast ? "check" : "save"}
+                        size={13}
+                        color="#10B981"
                       />
                     )}
-                    <Text style={[resStyles.copyBtnText, { color: "#34d399" }]}>
-                      {savedTranscriptToast ? "Đã lưu!" : "💾 Lưu bản gỡ"}
+                    <Text style={[resStyles.copyBtnText, { color: "#10B981" }]}>
+                      {savedTranscriptToast ? "Đã lưu" : "Lưu bản gỡ"}
                     </Text>
                   </Pressable>
                 )}
 
-                {/* Nút Sao chép */}
                 <Pressable
                   onPress={() => handleCopyText(transcriptContent)}
                   style={({ pressed }) => [resStyles.copyBtn, pressed && resStyles.btnPressed]}
                 >
-                  <Ionicons name={copied ? "checkmark-circle" : "copy-outline"} size={14} color="#818cf8" />
-                  <Text style={resStyles.copyBtnText}>{copied ? "Đã sao chép!" : "Sao chép"}</Text>
+                  <Feather name={copied ? "check" : "copy"} size={13} color="#2563EB" />
+                  <Text style={resStyles.copyBtnText}>{copied ? "Đã chép" : "Sao chép"}</Text>
                 </Pressable>
               </View>
             </View>
 
-            {/* Thanh Tìm Kiếm Từ Khóa trong Transcript */}
+            {/* Search Bar */}
             <View style={resStyles.searchBarRow}>
               <View style={resStyles.searchInputBox}>
-                <Ionicons name="search" size={16} color="#64748b" style={{ marginRight: 8 }} />
+                <Feather name="search" size={14} color="#64748B" style={{ marginRight: 8 }} />
                 <TextInput
                   value={transcriptSearch}
                   onChangeText={setTranscriptSearch}
-                  placeholder="🔍 Tìm trong bản gỡ băng... (VD: kinh tế, dự án, kết luận...)"
-                  placeholderTextColor="#64748b"
+                  placeholder="Tìm kiếm từ khóa trong bản gỡ băng..."
+                  placeholderTextColor="#64748B"
                   style={resStyles.searchInput}
                 />
                 {transcriptSearch.length > 0 ? (
                   <Pressable onPress={() => setTranscriptSearch("")} style={{ padding: 4 }}>
-                    <Ionicons name="close-circle" size={16} color="#94a3b8" />
+                    <Feather name="x" size={14} color="#94A3B8" />
                   </Pressable>
                 ) : null}
               </View>
@@ -2557,14 +2549,14 @@ function ResultDashboard({
                 <View style={resStyles.searchCountBadge}>
                   <Text style={resStyles.searchCountText}>
                     {transcriptMatchCount > 0
-                      ? `🎯 Tìm thấy ${transcriptMatchCount} lần xuất hiện`
-                      : "Không tìm thấy kết quả"}
+                      ? `Tìm thấy ${transcriptMatchCount} kết quả`
+                      : "Không có kết quả"}
                   </Text>
                 </View>
               ) : null}
             </View>
 
-            {/* Khung Hiển Thị Văn Bản Bóc Băng */}
+            {/* Văn bản bóc băng */}
             <View
               style={[
                 resStyles.textBox,
@@ -2614,7 +2606,6 @@ function ResultDashboard({
                       );
                     }
 
-                    // Tách và highlight từ khóa
                     try {
                       const escaped = transcriptSearch.trim().replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
                       const parts = fullText.split(new RegExp(`(${escaped})`, "gi"));
@@ -2640,7 +2631,7 @@ function ResultDashboard({
                                   style={{
                                     backgroundColor: "#FEF08A",
                                     color: "#854D0E",
-                                    fontWeight: "800",
+                                    fontWeight: "700",
                                     paddingHorizontal: 2,
                                   }}
                                 >
@@ -2663,456 +2654,940 @@ function ResultDashboard({
         </View>
       )}
 
+      {/* =====================================================================
+          TAB 4: HỎI ĐÁP AI COPILOT (GROUNDED MEETING ASSISTANT - NOTEBOOKLM)
+      ===================================================================== */}
+      {activeTab === "copilot" && (
+        <View style={{ gap: 14 }}>
+          {/* Header Card */}
+          <View style={copilotStyles.heroCard}>
+            <View style={copilotStyles.heroHeader}>
+              <View style={copilotStyles.heroIconBox}>
+                <Feather name="message-square" size={16} color="#2563EB" />
+              </View>
+              <View style={{ flex: 1 }}>
+                <View style={{ flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                  <Text style={copilotStyles.heroTitle}>Trợ lý Hỏi đáp Cuộc họp (Meeting Copilot)</Text>
+                  <View style={copilotStyles.groundedBadge}>
+                    <Feather name="shield" size={10} color="#10B981" style={{ marginRight: 4 }} />
+                    <Text style={copilotStyles.groundedBadgeText}>100% Grounded Context</Text>
+                  </View>
+                </View>
+                <Text style={copilotStyles.heroSub}>
+                  Giải đáp mọi thắc mắc bám sát nội dung biên bản, bản gỡ băng âm thanh và nhiệm vụ
+                </Text>
+              </View>
+            </View>
+
+            {/* Smart Prompt Chips */}
+            <View style={copilotStyles.chipsSection}>
+              <Text style={copilotStyles.chipsTitle}>GỢI Ý CÂU HỎI TRỌNG TÂM:</Text>
+              <View style={copilotStyles.chipsRow}>
+                {COPILOT_QUICK_PROMPTS.map((promptText, idx) => (
+                  <Pressable
+                    key={idx}
+                    disabled={copilotLoading}
+                    onPress={() => handleAskCopilot(promptText)}
+                    style={({ pressed }) => [
+                      copilotStyles.promptChip,
+                      pressed && copilotStyles.btnPressed,
+                    ]}
+                  >
+                    <Feather name="help-circle" size={12} color="#60A5FA" style={{ marginRight: 5 }} />
+                    <Text style={copilotStyles.promptChipText}>{promptText}</Text>
+                  </Pressable>
+                ))}
+              </View>
+            </View>
+
+            {/* Input Bar */}
+            <View style={copilotStyles.inputRow}>
+              <TextInput
+                value={copilotQuestion}
+                onChangeText={setCopilotQuestion}
+                placeholder="Đặt câu hỏi về nội dung, nhân sự hoặc quyết định trong cuộc họp..."
+                placeholderTextColor="#64748B"
+                style={copilotStyles.questionInput}
+                editable={!copilotLoading}
+                onSubmitEditing={() => handleAskCopilot()}
+              />
+              <Pressable
+                onPress={() => handleAskCopilot()}
+                disabled={copilotLoading || !copilotQuestion.trim()}
+                style={({ pressed }) => [
+                  copilotStyles.askSubmitBtn,
+                  (!copilotQuestion.trim() || copilotLoading) && { opacity: 0.5 },
+                  pressed && copilotStyles.btnPressed,
+                ]}
+              >
+                {copilotLoading ? (
+                  <ActivityIndicator size="small" color="#FFFFFF" />
+                ) : (
+                  <>
+                    <Feather name="send" size={13} color="#FFFFFF" style={{ marginRight: 6 }} />
+                    <Text style={copilotStyles.askSubmitText}>Hỏi AI</Text>
+                  </>
+                )}
+              </Pressable>
+            </View>
+          </View>
+
+          {/* Answer Card */}
+          {copilotLoading ? (
+            <View style={copilotStyles.loadingCard}>
+              <ActivityIndicator size="small" color="#2563EB" />
+              <Text style={copilotStyles.loadingText}>
+                Trợ lý AI đang tra cứu biên bản và phân tích dữ liệu cuộc họp...
+              </Text>
+            </View>
+          ) : copilotAnswer ? (
+            <View style={copilotStyles.answerCard}>
+              <View style={copilotStyles.answerHeader}>
+                <View style={copilotStyles.engineBadge}>
+                  <Feather
+                    name={copilotEngine === "gemini" ? "cloud" : "cpu"}
+                    size={12}
+                    color={copilotEngine === "gemini" ? "#2563EB" : "#94A3B8"}
+                    style={{ marginRight: 5 }}
+                  />
+                  <Text style={[copilotStyles.engineText, { color: copilotEngine === "gemini" ? "#3B82F6" : "#94A3B8" }]}>
+                    {copilotEngine === "gemini" ? "Google Gemini Pro AI" : "Local AI Engine"}
+                  </Text>
+                </View>
+
+                <Pressable
+                  onPress={() => handleCopyCopilotAnswer(copilotAnswer)}
+                  style={({ pressed }) => [
+                    copilotStyles.copyBtn,
+                    pressed && copilotStyles.btnPressed,
+                  ]}
+                >
+                  <Feather
+                    name={copilotCopied ? "check" : "copy"}
+                    size={12}
+                    color={copilotCopied ? "#10B981" : "#94A3B8"}
+                    style={{ marginRight: 4 }}
+                  />
+                  <Text style={[copilotStyles.copyText, copilotCopied && { color: "#10B981" }]}>
+                    {copilotCopied ? "Đã sao chép" : "Sao chép câu trả lời"}
+                  </Text>
+                </Pressable>
+              </View>
+
+              <ScrollView style={copilotStyles.answerScroll} nestedScrollEnabled>
+                <Text style={copilotStyles.answerBody}>{copilotAnswer}</Text>
+              </ScrollView>
+            </View>
+          ) : (
+            <View style={copilotStyles.emptyCard}>
+              <View style={copilotStyles.emptyIconBox}>
+                <Feather name="compass" size={24} color="#64748B" />
+              </View>
+              <Text style={copilotStyles.emptyTitle}>Sẵn sàng giải đáp mọi câu hỏi</Text>
+              <Text style={copilotStyles.emptySub}>
+                Nhấp vào gợi ý phía trên hoặc nhập câu hỏi bất kỳ để tra cứu nhanh thông tin từ cuộc họp này.
+              </Text>
+            </View>
+          )}
+        </View>
+      )}
+
     </Animated.View>
   );
 }
 
 // ===========================================================================
-// STYLES CHO RESULT DASHBOARD & KHUNG BIỂU MẪU CHUẨN
+// STYLES
 // ===========================================================================
+const s = StyleSheet.create({
+  safeArea: { flex: 1, backgroundColor: "#0C0E12" },
+  loadingContainer: { flex: 1, backgroundColor: "#0C0E12", alignItems: "center", justifyContent: "center" },
+  loadingText: { color: "#94A3B8", fontSize: 13, marginTop: 10 },
+  mainContainer: { flex: 1, width: "100%", maxWidth: 1200, alignSelf: "center" },
+
+  navBar: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingHorizontal: 18,
+    paddingVertical: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#262932",
+    backgroundColor: "#111318",
+  },
+  navLeft: { flexDirection: "row", alignItems: "center", gap: 10, flex: 1 },
+  backButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 6,
+    backgroundColor: "#161920",
+    borderWidth: 1,
+    borderColor: "#262932",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  navTitleBox: { flex: 1 },
+  navTitle: { color: "#F8FAFC", fontSize: 16, fontWeight: "700" },
+  idBadge: {
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    paddingHorizontal: 5,
+    paddingVertical: 1,
+    borderRadius: 4,
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.25)",
+  },
+  idBadgeText: { color: "#60A5FA", fontSize: 10, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  navSubtitle: { color: "#64748B", fontSize: 11, marginTop: 2 },
+  navRight: { flexDirection: "row", alignItems: "center", gap: 8 },
+  statusPill: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 6,
+    backgroundColor: "#161920",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  statusPillRec: { backgroundColor: "rgba(239, 68, 68, 0.1)", borderColor: "rgba(239, 68, 68, 0.3)" },
+  statusPillProc: { backgroundColor: "rgba(245, 158, 11, 0.1)", borderColor: "rgba(245, 158, 11, 0.3)" },
+  statusPillDone: { backgroundColor: "rgba(16, 185, 129, 0.1)", borderColor: "rgba(16, 185, 129, 0.3)" },
+  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#64748B" },
+  statusPillText: { color: "#CBD5E1", fontSize: 11, fontWeight: "500" },
+
+  scrollContent: { padding: 18, paddingBottom: 50 },
+  grid: { flexDirection: Platform.OS === "web" ? "row" : "column", alignItems: "flex-start", gap: 18 },
+  leftCol: { width: Platform.OS === "web" ? 360 : "100%", flexShrink: 0 },
+  rightCol: { flex: 1, minWidth: 0, width: "100%" },
+
+  /* Sony / Zoom Recorder Card */
+  recorderCard: {
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 20,
+    borderWidth: 1,
+    borderColor: "#262932",
+    alignItems: "center",
+  },
+  recorderHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    width: "100%",
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: "#262932",
+    marginBottom: 16,
+  },
+  recorderBrand: { flexDirection: "row", alignItems: "center", gap: 6 },
+  recorderBrandText: { color: "#64748B", fontSize: 10, fontWeight: "700", letterSpacing: 0.8 },
+  ledRow: { flexDirection: "row", alignItems: "center", gap: 5 },
+  ledIndicator: { width: 7, height: 7, borderRadius: 4 },
+  ledText: { color: "#94A3B8", fontSize: 10, fontWeight: "700" },
+
+  timerDisplay: {
+    width: "100%",
+    backgroundColor: "#0C0E12",
+    borderRadius: 8,
+    paddingVertical: 14,
+    alignItems: "center",
+    borderWidth: 1,
+    borderColor: "#262932",
+    marginBottom: 20,
+  },
+  timerText: {
+    color: "#64748B",
+    fontSize: 44,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+    letterSpacing: -0.5,
+  },
+  timerActive: { color: "#F8FAFC" },
+  timerSubtext: { color: "#475569", fontSize: 10, fontWeight: "600", letterSpacing: 0.5, marginTop: 4 },
+
+  micWrap: { alignItems: "center", justifyContent: "center", marginBottom: 20, position: "relative" },
+  micPulse: {
+    position: "absolute",
+    width: 120,
+    height: 120,
+    borderRadius: 60,
+    borderWidth: 1.5,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+    backgroundColor: "rgba(239, 68, 68, 0.06)",
+  },
+  micBtn: {
+    width: 80,
+    height: 80,
+    borderRadius: 40,
+    backgroundColor: "#2563EB",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  micBtnActive: { backgroundColor: "#EF4444" },
+
+  recActionBtn: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingVertical: 11,
+    borderRadius: 8,
+    marginBottom: 14,
+  },
+  recActionStart: { backgroundColor: "#2563EB" },
+  recActionStop: { backgroundColor: "#EF4444" },
+  recActionText: { color: "#FFFFFF", fontSize: 13, fontWeight: "600" },
+
+  dividerRow: { flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 14 },
+  dividerLine: { flex: 1, height: 1, backgroundColor: "#262932" },
+  dividerText: { color: "#64748B", fontSize: 10, fontWeight: "600", paddingHorizontal: 10, letterSpacing: 0.5 },
+
+  uploadBtn: {
+    width: "100%",
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+    marginBottom: 12,
+  },
+  uploadIconCircle: {
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  uploadTitle: { color: "#F8FAFC", fontSize: 12, fontWeight: "600" },
+  uploadSub: { color: "#64748B", fontSize: 10, marginTop: 2 },
+  selectedFileBox: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    width: "100%",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
+    backgroundColor: "rgba(37, 99, 235, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.2)",
+    marginBottom: 12,
+  },
+  selectedFileName: { flex: 1, color: "#60A5FA", fontSize: 11, fontWeight: "500" },
+  selectedFileSize: { color: "#64748B", fontSize: 10 },
+
+  specBox: { width: "100%", gap: 6, paddingTop: 6, borderTopWidth: 1, borderTopColor: "#262932" },
+  specItem: { flexDirection: "row", alignItems: "center", gap: 8, paddingVertical: 4 },
+  specItemText: { color: "#94A3B8", fontSize: 11 },
+
+  /* Idle Card */
+  idleCard: {
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 28,
+    borderWidth: 1,
+    borderColor: "#262932",
+    alignItems: "center",
+  },
+  idleIconBox: {
+    width: 56,
+    height: 56,
+    borderRadius: 10,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    borderWidth: 1,
+    borderColor: "rgba(37, 99, 235, 0.25)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 14,
+  },
+  idleTitle: { color: "#F8FAFC", fontSize: 17, fontWeight: "700", marginBottom: 6 },
+  idleSub: { color: "#94A3B8", fontSize: 13, textAlign: "center", lineHeight: 20, maxWidth: 480, marginBottom: 24 },
+  capList: { width: "100%", gap: 10 },
+  capItem: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    gap: 12,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  capBullet: {
+    width: 28,
+    height: 28,
+    borderRadius: 6,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  capHead: { color: "#F8FAFC", fontSize: 13, fontWeight: "600", marginBottom: 2 },
+  capBody: { color: "#94A3B8", fontSize: 11, lineHeight: 16 },
+
+  recFeedbackCard: {
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 32,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.2)",
+    alignItems: "center",
+  },
+  waveContainer: { flexDirection: "row", alignItems: "center", justifyContent: "center", height: 36, marginBottom: 16 },
+  recFeedTitle: { color: "#F8FAFC", fontSize: 16, fontWeight: "700", marginBottom: 4 },
+  recFeedSub: { color: "#94A3B8", fontSize: 12, textAlign: "center", lineHeight: 18, maxWidth: 400 },
+
+  errorCard: {
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 28,
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.3)",
+    alignItems: "center",
+  },
+  errorIconBox: {
+    width: 52,
+    height: 52,
+    borderRadius: 10,
+    backgroundColor: "rgba(239, 68, 68, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+    marginBottom: 12,
+  },
+  errorTitle: { color: "#EF4444", fontSize: 16, fontWeight: "700", marginBottom: 4 },
+  errorMsg: { color: "#F8FAFC", fontSize: 13, fontWeight: "500", textAlign: "center", marginBottom: 4 },
+  errorDtl: { color: "#94A3B8", fontSize: 11, textAlign: "center", lineHeight: 16, marginBottom: 16 },
+  retryBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 16,
+    paddingVertical: 9,
+    borderRadius: 8,
+  },
+  retryBtnText: { color: "#FFFFFF", fontWeight: "600", fontSize: 13 },
+
+  btnPressed: { opacity: 0.8 },
+});
+
+/* Technical Stepper Styles */
+const procStyles = StyleSheet.create({
+  container: {
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 22,
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  metricRow: {
+    flexDirection: "row",
+    alignItems: "flex-start",
+    justifyContent: "space-between",
+    marginBottom: 12,
+  },
+  headerLeft: { flex: 1 },
+  title: { color: "#F8FAFC", fontSize: 15, fontWeight: "700" },
+  detail: { color: "#94A3B8", fontSize: 12, marginTop: 2 },
+  percentText: {
+    color: "#2563EB",
+    fontSize: 24,
+    fontWeight: "700",
+    fontVariant: ["tabular-nums"],
+  },
+  progressBarBg: {
+    width: "100%",
+    height: 4,
+    borderRadius: 2,
+    backgroundColor: "#262932",
+    marginBottom: 16,
+    overflow: "hidden",
+  },
+  progressBarFill: { height: 4, borderRadius: 2, backgroundColor: "#2563EB" },
+  stepList: { width: "100%", gap: 8, marginBottom: 14 },
+  stepItem: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 10,
+    backgroundColor: "#111318",
+    borderRadius: 8,
+    padding: 10,
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  stepItemActive: { borderColor: "#2563EB", backgroundColor: "rgba(37, 99, 235, 0.04)" },
+  stepCircle: {
+    width: 24,
+    height: 24,
+    borderRadius: 12,
+    backgroundColor: "#1F232D",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  stepCircleActive: { backgroundColor: "rgba(37, 99, 235, 0.15)", borderWidth: 1, borderColor: "#2563EB" },
+  stepCircleDone: { backgroundColor: "#10B981", borderColor: "#10B981" },
+  stepNum: { color: "#64748B", fontSize: 11, fontWeight: "600" },
+  stepTitle: { color: "#F8FAFC", fontSize: 12, fontWeight: "600" },
+  stepSub: { color: "#64748B", fontSize: 10, marginTop: 1 },
+  liveTranscriptBox: {
+    width: "100%",
+    backgroundColor: "#111318",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    overflow: "hidden",
+  },
+  liveTranscriptHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 6,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: "#262932",
+  },
+  liveTranscriptTitle: { color: "#94A3B8", fontSize: 11, fontWeight: "600", flex: 1 },
+  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#10B981" },
+  liveTranscriptScroll: { maxHeight: 180, padding: 12 },
+  liveTranscriptText: { color: "#CBD5E1", fontSize: 11, lineHeight: 18, fontFamily: Platform.OS === "web" ? "monospace" : undefined },
+});
+
+/* Result Dashboard & Ribbon Styles */
 const resStyles = StyleSheet.create({
   topBanner: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "#111827",
-    borderRadius: 16,
-    padding: 16,
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    padding: 14,
     borderWidth: 1,
-    borderColor: "rgba(52,211,153,0.2)",
-    marginBottom: 16,
+    borderColor: "rgba(16, 185, 129, 0.25)",
+    marginBottom: 12,
     flexWrap: "wrap",
-    gap: 12,
+    gap: 10,
   },
-  topBannerLeft: { flexDirection: "row", alignItems: "center", gap: 12 },
+  topBannerLeft: { flexDirection: "row", alignItems: "center", gap: 10 },
   successCircle: {
-    width: 40,
-    height: 40,
-    borderRadius: 12,
-    backgroundColor: "rgba(52,211,153,0.15)",
+    width: 32,
+    height: 32,
+    borderRadius: 6,
+    backgroundColor: "rgba(16, 185, 129, 0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
-  topBannerTitle: { color: "#f8fafc", fontSize: 16, fontWeight: "800" },
-  topBannerSub: { color: "#94a3b8", fontSize: 12, marginTop: 2 },
+  topBannerTitle: { color: "#F8FAFC", fontSize: 14, fontWeight: "700" },
+  topBannerSub: { color: "#94A3B8", fontSize: 11, marginTop: 1 },
   newRecBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(99,102,241,0.12)",
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 10,
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "rgba(99,102,241,0.25)",
+    borderColor: "rgba(37, 99, 235, 0.25)",
   },
-  newRecBtnText: { color: "#a5b4fc", fontSize: 12, fontWeight: "700" },
+  newRecBtnText: { color: "#60A5FA", fontSize: 11, fontWeight: "600" },
 
-  tabsRow: { flexDirection: "row", gap: 8, marginBottom: 14, flexWrap: "wrap" },
+  tabsRow: { flexDirection: "row", gap: 6, marginBottom: 12, flexWrap: "wrap" },
   tabBtn: {
     flex: 1,
     minWidth: 120,
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "center",
-    paddingVertical: 12,
-    paddingHorizontal: 12,
-    borderRadius: 12,
-    backgroundColor: "#111827",
+    paddingVertical: 10,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    backgroundColor: "#161920",
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
-  tabBtnActive: { backgroundColor: "rgba(99,102,241,0.16)", borderColor: "#6366f1" },
-  tabText: { color: "#94a3b8", fontSize: 13, fontWeight: "600" },
-  tabTextActive: { color: "#a5b4fc", fontWeight: "800" },
+  tabBtnActive: { backgroundColor: "rgba(37, 99, 235, 0.12)", borderColor: "#2563EB" },
+  tabText: { color: "#94A3B8", fontSize: 12, fontWeight: "500" },
+  tabTextActive: { color: "#60A5FA", fontWeight: "600" },
 
-  /* AI Text Studio */
+  /* AI Style Switcher */
   aiStudioCard: {
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    padding: 14,
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    padding: 12,
     borderWidth: 1,
-    borderColor: "rgba(99,102,241,0.35)",
-    gap: 12,
+    borderColor: "#262932",
+    gap: 10,
   },
   aiStudioHeader: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
   },
-  aiSparkleIcon: {
-    width: 28,
-    height: 28,
-    borderRadius: 8,
-    backgroundColor: "rgba(99,102,241,0.15)",
+  aiStudioIconBox: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
     alignItems: "center",
     justifyContent: "center",
   },
-  aiStudioTitle: { color: "#f8fafc", fontSize: 14, fontWeight: "800" },
-  aiStudioSub: { color: "#94a3b8", fontSize: 11, marginTop: 2 },
+  aiStudioTitle: { color: "#F8FAFC", fontSize: 13, fontWeight: "600" },
+  aiStudioSub: { color: "#94A3B8", fontSize: 11, marginTop: 1 },
   aiLoadingBadge: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
-    backgroundColor: "rgba(99,102,241,0.15)",
-    paddingHorizontal: 10,
-    paddingVertical: 4,
-    borderRadius: 20,
-    borderWidth: 1,
-    borderColor: "rgba(99,102,241,0.3)",
+    backgroundColor: "rgba(37, 99, 235, 0.1)",
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 6,
   },
-  aiLoadingText: { color: "#a5b4fc", fontSize: 11, fontWeight: "700" },
+  aiLoadingText: { color: "#60A5FA", fontSize: 11, fontWeight: "600" },
   aiPresetsRow: {
     flexDirection: "row",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
   },
   aiPresetBtn: {
     flex: 1,
-    minWidth: 130,
-    backgroundColor: "#0F172A",
-    borderRadius: 10,
-    paddingVertical: 8,
-    paddingHorizontal: 10,
+    minWidth: 120,
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    paddingVertical: 7,
+    paddingHorizontal: 8,
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
   aiPresetBtnActive: {
-    backgroundColor: "rgba(99,102,241,0.2)",
-    borderColor: "#6366f1",
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    borderColor: "#2563EB",
   },
-  aiPresetLabel: { color: "#f8fafc", fontSize: 12, fontWeight: "700" },
-  aiPresetDesc: { color: "#64748b", fontSize: 10, marginTop: 2 },
+  aiPresetLabel: { color: "#F8FAFC", fontSize: 11, fontWeight: "600" },
+  aiPresetDesc: { color: "#64748B", fontSize: 9, marginTop: 2 },
   aiPromptBar: {
     flexDirection: "row",
     alignItems: "center",
-    gap: 8,
-    backgroundColor: "#0F172A",
-    borderRadius: 10,
-    padding: 6,
+    gap: 6,
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    padding: 4,
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
   aiPromptInput: {
     flex: 1,
-    color: "#f8fafc",
+    color: "#F8FAFC",
     fontSize: 12,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
   },
   aiPromptSubmitBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 14,
-    paddingVertical: 8,
-    borderRadius: 8,
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+    borderRadius: 4,
   },
-  aiPromptSubmitText: { color: "#ffffff", fontSize: 12, fontWeight: "700" },
+  aiPromptSubmitText: { color: "#FFFFFF", fontSize: 11, fontWeight: "600" },
 
-  /* Typography Toolbar */
-  typoCard: {
-    backgroundColor: "#111827",
-    borderRadius: 14,
-    padding: 12,
+  /* Ribbon Toolbar */
+  ribbonToolbar: {
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    padding: 10,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "#262932",
+    gap: 8,
+  },
+  ribbonRow: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    flexWrap: "wrap",
     gap: 10,
   },
-  typoRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    flexWrap: "wrap",
-    gap: 12,
-  },
-  typoGroup: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 8,
-    flexWrap: "wrap",
-  },
-  typoLabel: { color: "#94a3b8", fontSize: 12, fontWeight: "700" },
-  fontPill: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  fontPillActive: {
-    backgroundColor: "#4f46e5",
-    borderColor: "#6366f1",
-  },
-  fontPillText: { color: "#cbd5e1", fontSize: 12, fontWeight: "600" },
-  fontPillTextActive: { color: "#ffffff", fontWeight: "800" },
-  fontPillNote: { color: "#64748b", fontSize: 10 },
-  themePill: {
-    paddingHorizontal: 10,
-    paddingVertical: 6,
-    borderRadius: 8,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  themePillActive: {
-    backgroundColor: "rgba(99,102,241,0.2)",
-    borderColor: "#6366f1",
-  },
-  themePillText: { color: "#cbd5e1", fontSize: 12, fontWeight: "600" },
-  themePillTextActive: { color: "#a5b4fc", fontWeight: "800" },
-
-  sizeStepperBtn: {
-    width: 28,
-    height: 28,
-    borderRadius: 6,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    alignItems: "center",
-    justifyContent: "center",
-  },
-  sizeStepperText: { color: "#cbd5e1", fontSize: 12, fontWeight: "700" },
-  sizePill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  sizePillActive: { backgroundColor: "#4f46e5", borderColor: "#6366f1" },
-  sizePillText: { color: "#94a3b8", fontSize: 11, fontWeight: "600" },
-  sizePillTextActive: { color: "#ffffff", fontWeight: "800" },
-
-  spacingPill: {
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  spacingPillActive: { backgroundColor: "rgba(99,102,241,0.2)", borderColor: "#6366f1" },
-  spacingPillText: { color: "#94a3b8", fontSize: 11, fontWeight: "600" },
-  spacingPillTextActive: { color: "#a5b4fc", fontWeight: "800" },
-
-  alignBtn: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#0F172A",
-    borderWidth: 1,
-    borderColor: "#1e293b",
-  },
-  alignBtnActive: { backgroundColor: "rgba(99,102,241,0.2)", borderColor: "#6366f1" },
-  alignBtnText: { color: "#94a3b8", fontSize: 11, fontWeight: "600" },
-
-  /* Quick Formatting Bar */
-  quickFormatCard: {
-    flexDirection: "row",
-    alignItems: "center",
-    justifyContent: "space-between",
-    backgroundColor: "#0F172A",
-    borderRadius: 10,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderWidth: 1,
-    borderColor: "#1e293b",
-    flexWrap: "wrap",
-    gap: 8,
-  },
-  quickFormatLeft: {
+  ribbonGroup: {
     flexDirection: "row",
     alignItems: "center",
     gap: 6,
     flexWrap: "wrap",
   },
-  quickFormatLabel: { color: "#818cf8", fontSize: 12, fontWeight: "700", marginRight: 4 },
-  qfBtn: {
+  ribbonLabel: { color: "#64748B", fontSize: 11, fontWeight: "600" },
+  fontPill: {
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "#1e293b",
+    borderRadius: 4,
+    backgroundColor: "#111318",
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "#262932",
   },
-  qfBtnText: { color: "#f8fafc", fontSize: 12 },
-  undoResetBtn: {
+  fontPillActive: {
+    backgroundColor: "#2563EB",
+    borderColor: "#2563EB",
+  },
+  fontPillText: { color: "#94A3B8", fontSize: 11, fontWeight: "500" },
+  fontPillTextActive: { color: "#FFFFFF", fontWeight: "600" },
+  themePill: {
     flexDirection: "row",
     alignItems: "center",
     paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 6,
-    backgroundColor: "rgba(248,113,113,0.1)",
+    borderRadius: 4,
+    backgroundColor: "#111318",
     borderWidth: 1,
-    borderColor: "rgba(248,113,113,0.3)",
+    borderColor: "#262932",
   },
-  undoResetText: { color: "#f87171", fontSize: 11, fontWeight: "700" },
+  themePillActive: {
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    borderColor: "#2563EB",
+  },
+  themePillText: { color: "#94A3B8", fontSize: 11, fontWeight: "500" },
+  themePillTextActive: { color: "#60A5FA", fontWeight: "600" },
+
+  sizeStepperBtn: {
+    width: 24,
+    height: 24,
+    borderRadius: 4,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  sizeStepperText: { color: "#CBD5E1", fontSize: 12, fontWeight: "600" },
+  sizePill: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  sizePillActive: { backgroundColor: "#2563EB", borderColor: "#2563EB" },
+  sizePillText: { color: "#94A3B8", fontSize: 10, fontWeight: "500", fontVariant: ["tabular-nums"] },
+  sizePillTextActive: { color: "#FFFFFF", fontWeight: "600" },
+
+  spacingPill: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  spacingPillActive: { backgroundColor: "rgba(37, 99, 235, 0.12)", borderColor: "#2563EB" },
+  spacingPillText: { color: "#94A3B8", fontSize: 10, fontWeight: "500" },
+  spacingPillTextActive: { color: "#60A5FA", fontWeight: "600" },
+
+  alignBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 3,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  alignBtnActive: { backgroundColor: "rgba(37, 99, 235, 0.12)", borderColor: "#2563EB" },
+  alignBtnText: { color: "#94A3B8", fontSize: 10, fontWeight: "500" },
 
   /* Action Toolbar */
-  toolbarCard: {
+  actionToolbarCard: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    backgroundColor: "#111827",
-    padding: 12,
-    borderRadius: 14,
+    backgroundColor: "#161920",
+    padding: 10,
+    borderRadius: 8,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "#262932",
     flexWrap: "wrap",
-    gap: 10,
+    gap: 8,
   },
-  toolbarLeft: { flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" },
-  toolbarRight: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  actionToolbarLeft: { flexDirection: "row", alignItems: "center", gap: 8, flexWrap: "wrap" },
+  actionToolbarRight: { flexDirection: "row", alignItems: "center", gap: 6, flexWrap: "wrap" },
 
   wordDownloadBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#4f46e5",
-    paddingHorizontal: 16,
-    paddingVertical: 10,
-    borderRadius: 10,
-    shadowColor: "#6366f1",
-    shadowOffset: { width: 0, height: 3 },
-    shadowOpacity: 0.35,
-    shadowRadius: 8,
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 6,
   },
-  wordDownloadBtnText: { color: "#ffffff", fontSize: 13, fontWeight: "800" },
+  wordDownloadBtnText: { color: "#FFFFFF", fontSize: 12, fontWeight: "600" },
 
   toolBtn: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0F172A",
-    paddingHorizontal: 12,
-    paddingVertical: 9,
-    borderRadius: 10,
+    backgroundColor: "#111318",
+    paddingHorizontal: 10,
+    paddingVertical: 7,
+    borderRadius: 6,
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
   toolBtnActive: {
-    backgroundColor: "rgba(99,102,241,0.15)",
-    borderColor: "rgba(99,102,241,0.4)",
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    borderColor: "#2563EB",
   },
-  toolBtnText: { color: "#cbd5e1", fontSize: 12, fontWeight: "600" },
+  toolBtnText: { color: "#CBD5E1", fontSize: 11, fontWeight: "500" },
 
-  /* Official Paper Sheet Preview (Trang giấy chuẩn Nghị định 30) */
+  /* Quick Format */
+  quickFormatCard: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderWidth: 1,
+    borderColor: "#262932",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  quickFormatLeft: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 5,
+    flexWrap: "wrap",
+  },
+  quickFormatLabel: { color: "#60A5FA", fontSize: 11, fontWeight: "600", marginRight: 2 },
+  qfBtn: {
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "#161920",
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  qfBtnText: { color: "#F8FAFC", fontSize: 11 },
+  undoResetBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 4,
+    backgroundColor: "rgba(239, 68, 68, 0.08)",
+    borderWidth: 1,
+    borderColor: "rgba(239, 68, 68, 0.25)",
+  },
+  undoResetText: { color: "#EF4444", fontSize: 11, fontWeight: "600" },
+
+  /* A4 Paper Sheet */
   paperSheet: {
-    borderRadius: 8,
+    borderRadius: 6,
     padding: Platform.OS === "web" ? 36 : 18,
     borderWidth: 1,
+    maxWidth: 820,
+    width: "100%",
+    alignSelf: "center",
     shadowColor: "#000000",
     shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
+    shadowOpacity: 0.12,
     shadowRadius: 16,
-    elevation: 4,
+    elevation: 3,
   },
-
   paperHeaderRow: {
     flexDirection: "row",
     justifyContent: "space-between",
     alignItems: "flex-start",
     borderBottomWidth: 1,
-    paddingBottom: 14,
-    marginBottom: 12,
-  },
-  paperHeaderLeft: { flex: 1, alignItems: "center" },
-  paperOrgName: { fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
-  paperDocNo: { fontSize: 11, marginTop: 3 },
-
-  paperHeaderRight: { flex: 1.2, alignItems: "center" },
-  paperNationName: { fontSize: 12, fontWeight: "800", textTransform: "uppercase" },
-  paperMotto: { fontSize: 13, fontWeight: "700", marginTop: 2 },
-  paperMottoLine: { fontSize: 10, letterSpacing: -1, marginTop: -2 },
-
-  paperDateRow: { alignItems: "flex-end", marginBottom: 16 },
-  paperDateText: { fontSize: 12, fontStyle: "italic" },
-  paperDateLabel: { fontSize: 12, fontStyle: "italic" },
-
-  paperTitleBox: { alignItems: "center", marginBottom: 20 },
-  paperMainTitle: { fontSize: 18, fontWeight: "900", letterSpacing: 0.5 },
-  paperSubTitle: { fontSize: 13, fontWeight: "700", fontStyle: "italic", marginTop: 4 },
-  paperSubTitleInput: {
-    textAlign: "center",
-    fontWeight: "700",
-    fontStyle: "italic",
-    fontSize: 13,
-    minWidth: 260,
-    marginTop: 4,
-  },
-
-  docSection: { marginBottom: 20 },
-  docSectionHead: {
-    fontSize: 14,
-    fontWeight: "800",
-    textTransform: "uppercase",
-    borderBottomWidth: 1,
-    paddingBottom: 4,
+    paddingBottom: 12,
     marginBottom: 10,
   },
+  paperHeaderLeft: { flex: 1, alignItems: "center" },
+  paperOrgName: { fontSize: 11, fontWeight: "700", textTransform: "uppercase" },
+  paperDocNo: { fontSize: 10, marginTop: 2 },
+  paperHeaderRight: { flex: 1.2, alignItems: "center" },
+  paperNationName: { fontSize: 11, fontWeight: "700", textTransform: "uppercase" },
+  paperMotto: { fontSize: 12, fontWeight: "600", marginTop: 2 },
+  paperMottoLine: { fontSize: 10, letterSpacing: -1, marginTop: -2 },
 
-  infoRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 6, flexWrap: "wrap" },
-  infoLabel: { width: 180, fontSize: 13, fontWeight: "700" },
-  infoVal: { flex: 1, lineHeight: 20 },
+  paperDateRow: { alignItems: "flex-end", marginBottom: 14 },
+  paperDateText: { fontSize: 11, fontStyle: "italic" },
+  paperDateLabel: { fontSize: 11, fontStyle: "italic" },
+
+  paperTitleBox: { alignItems: "center", marginBottom: 18 },
+  paperMainTitle: { fontSize: 17, fontWeight: "700", letterSpacing: 0.5 },
+  paperSubTitle: { fontSize: 12, fontWeight: "600", fontStyle: "italic", marginTop: 3 },
+  paperSubTitleInput: {
+    textAlign: "center",
+    fontWeight: "600",
+    fontStyle: "italic",
+    fontSize: 12,
+    minWidth: 240,
+    marginTop: 3,
+  },
+
+  docSection: { marginBottom: 18 },
+  docSectionHead: {
+    fontSize: 13,
+    fontWeight: "700",
+    textTransform: "uppercase",
+    borderBottomWidth: 1,
+    paddingBottom: 3,
+    marginBottom: 8,
+  },
+  infoRow: { flexDirection: "row", alignItems: "flex-start", marginBottom: 5, flexWrap: "wrap" },
+  infoLabel: { width: 170, fontSize: 12, fontWeight: "600" },
+  infoVal: { flex: 1, lineHeight: 18 },
   infoInput: {
     flex: 1,
-    fontSize: 13,
+    fontSize: 12,
     borderWidth: 1,
-    borderColor: "#94a3b8",
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 4,
+    borderColor: "#94A3B8",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
   },
   inlineInput: {
     borderWidth: 1,
-    borderColor: "#94a3b8",
-    borderRadius: 6,
-    paddingHorizontal: 8,
-    paddingVertical: 3,
-    fontSize: 12,
+    borderColor: "#94A3B8",
+    borderRadius: 4,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    fontSize: 11,
   },
 
-  /* Editor Box */
-  editorBox: { marginTop: 8 },
-  editorHint: { fontSize: 12, fontStyle: "italic", marginBottom: 8 },
+  editorBox: { marginTop: 6 },
+  editorHint: { fontSize: 11, fontStyle: "italic", marginBottom: 6 },
   editorInput: {
     borderWidth: 1,
-    borderRadius: 8,
-    padding: 14,
-    minHeight: 280,
+    borderRadius: 6,
+    padding: 12,
+    minHeight: 260,
   },
 
-  /* Rendered Minutes */
-  minutesRenderBox: { paddingHorizontal: 4 },
-  paperSubHead: { fontWeight: "800", marginTop: 12, marginBottom: 4 },
-  paperBulletRow: { flexDirection: "row", alignItems: "flex-start", marginLeft: 16, marginBottom: 4 },
-  paperBulletDot: { fontSize: 14, marginRight: 8, lineHeight: 20 },
+  minutesRenderBox: { paddingHorizontal: 2 },
+  paperSubHead: { fontWeight: "700", marginTop: 10, marginBottom: 3 },
+  paperBulletRow: { flexDirection: "row", alignItems: "flex-start", marginLeft: 14, marginBottom: 3 },
+  paperBulletDot: { fontSize: 13, marginRight: 6, lineHeight: 18 },
   paperBulletText: { flex: 1 },
-  paperNormalText: { marginBottom: 8, paddingLeft: 8 },
+  paperNormalText: { marginBottom: 6, paddingLeft: 6 },
 
-  /* Table */
   tableWrapper: {
     borderWidth: 1,
     borderRadius: 4,
     overflow: "hidden",
-    marginTop: 6,
+    marginTop: 4,
   },
   tableHeaderRow: {
     flexDirection: "row",
     borderBottomWidth: 1,
   },
   thCell: {
-    padding: 8,
-    fontSize: 12,
-    fontWeight: "800",
+    padding: 6,
+    fontSize: 11,
+    fontWeight: "700",
     borderRightWidth: 1,
   },
   tableDataRow: {
@@ -3121,283 +3596,347 @@ const resStyles = StyleSheet.create({
     alignItems: "center",
   },
   tdCell: {
-    padding: 8,
-    fontSize: 12,
+    padding: 6,
+    fontSize: 11,
     borderRightWidth: 1,
   },
-  taskCellTitle: { fontSize: 12, fontWeight: "700" },
-  taskCellDesc: { fontSize: 11, fontStyle: "italic", marginTop: 2 },
-  tableEmptyRow: { padding: 16, alignItems: "center" },
-  tableEmptyText: { fontSize: 12, fontStyle: "italic" },
+  taskCellTitle: { fontSize: 11, fontWeight: "600" },
+  taskCellDesc: { fontSize: 10, fontStyle: "italic", marginTop: 1 },
+  tableEmptyRow: { padding: 14, alignItems: "center" },
+  tableEmptyText: { fontSize: 11, fontStyle: "italic" },
 
-  /* Signatures */
   sigContainer: {
     flexDirection: "row",
     justifyContent: "space-around",
-    marginTop: 32,
-    paddingTop: 16,
+    marginTop: 28,
+    paddingTop: 14,
     borderTopWidth: 1,
   },
   sigCol: { alignItems: "center", flex: 1 },
-  sigRole: { fontSize: 13, fontWeight: "800", textTransform: "uppercase" },
-  sigNote: { fontSize: 11, fontStyle: "italic", marginTop: 2 },
-  sigSpace: { height: 60 },
-  sigSigned: { color: "#10b981", fontSize: 11, fontStyle: "italic" },
-  sigName: { fontSize: 13, fontWeight: "700", marginTop: 4 },
+  sigRole: { fontSize: 12, fontWeight: "700", textTransform: "uppercase" },
+  sigNote: { fontSize: 10, fontStyle: "italic", marginTop: 1 },
+  sigSpace: { height: 50 },
+  sigSigned: { color: "#10B981", fontSize: 10, fontStyle: "italic" },
+  sigName: { fontSize: 12, fontWeight: "600", marginTop: 3 },
 
-  /* Common Card for Tab 2 & 3 */
+  /* Card for Tab 2 & 3 */
   card: {
-    backgroundColor: "#111827",
-    borderRadius: 18,
-    padding: 20,
+    backgroundColor: "#161920",
+    borderRadius: 10,
+    padding: 16,
     borderWidth: 1,
-    borderColor: "rgba(255,255,255,0.08)",
+    borderColor: "#262932",
   },
   cardHeaderRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    paddingBottom: 14,
+    paddingBottom: 12,
     borderBottomWidth: 1,
-    borderBottomColor: "rgba(255,255,255,0.06)",
+    borderBottomColor: "#262932",
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
   },
-  cardHeaderTitle: { color: "#f8fafc", fontSize: 15, fontWeight: "700" },
+  cardHeaderTitle: { color: "#F8FAFC", fontSize: 14, fontWeight: "600" },
   copyBtn: {
     flexDirection: "row",
     alignItems: "center",
     gap: 4,
-    backgroundColor: "rgba(99,102,241,0.12)",
-    paddingHorizontal: 10,
+    backgroundColor: "#111318",
+    paddingHorizontal: 8,
     paddingVertical: 5,
-    borderRadius: 8,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: "transparent",
+    borderColor: "#262932",
   },
-  copyBtnText: { color: "#a5b4fc", fontSize: 12, fontWeight: "600" },
+  copyBtnText: { color: "#94A3B8", fontSize: 11, fontWeight: "500" },
 
-  /* Search bar trong Transcript */
   searchBarRow: {
     flexDirection: "row",
     alignItems: "center",
     justifyContent: "space-between",
-    marginTop: 12,
+    marginTop: 10,
     marginBottom: 4,
     flexWrap: "wrap",
-    gap: 8,
+    gap: 6,
   },
   searchInputBox: {
     flex: 1,
-    minWidth: 260,
+    minWidth: 240,
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "#0F172A",
-    borderRadius: 10,
-    paddingHorizontal: 12,
+    backgroundColor: "#111318",
+    borderRadius: 6,
+    paddingHorizontal: 10,
     paddingVertical: 6,
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
-  searchInput: {
-    flex: 1,
-    color: "#f8fafc",
-    fontSize: 13,
-    padding: 0,
-  },
+  searchInput: { flex: 1, color: "#F8FAFC", fontSize: 12, padding: 0 },
   searchCountBadge: {
-    backgroundColor: "rgba(254,240,138,0.15)",
-    paddingHorizontal: 10,
+    backgroundColor: "rgba(254, 240, 138, 0.12)",
+    paddingHorizontal: 8,
     paddingVertical: 4,
-    borderRadius: 8,
+    borderRadius: 4,
     borderWidth: 1,
-    borderColor: "rgba(254,240,138,0.3)",
+    borderColor: "rgba(254, 240, 138, 0.25)",
   },
-  searchCountText: {
-    color: "#fef08a",
-    fontSize: 12,
-    fontWeight: "700",
-  },
+  searchCountText: { color: "#FEF08A", fontSize: 11, fontWeight: "600" },
 
   textBox: {
-    marginTop: 12,
-    padding: 18,
-    borderRadius: 12,
+    marginTop: 10,
+    padding: 14,
+    borderRadius: 8,
     borderWidth: 1,
   },
-  transcriptText: {
-    fontSize: 13,
-    lineHeight: 22,
-  },
-  transcriptInput: {
-    minHeight: 280,
-    padding: 0,
-  },
+  transcriptText: { fontSize: 12, lineHeight: 20 },
+  transcriptInput: { minHeight: 260, padding: 0 },
 
-  taskProgress: { color: "#34d399", fontSize: 12, fontWeight: "700" },
-  emptyTasksBox: { alignItems: "center", justifyContent: "center", paddingVertical: 36 },
-  emptyTasksText: { color: "#64748b", fontSize: 13, marginTop: 8, textAlign: "center" },
+  taskProgress: { color: "#10B981", fontSize: 11, fontWeight: "600", fontVariant: ["tabular-nums"] },
+  emptyTasksBox: { alignItems: "center", justifyContent: "center", paddingVertical: 32 },
+  emptyTasksText: { color: "#64748B", fontSize: 12, marginTop: 8, textAlign: "center" },
   taskItem: {
     flexDirection: "row",
     alignItems: "flex-start",
-    gap: 12,
-    padding: 14,
-    borderRadius: 12,
-    backgroundColor: "#0F172A",
+    gap: 10,
+    padding: 12,
+    borderRadius: 8,
+    backgroundColor: "#111318",
     borderWidth: 1,
-    borderColor: "#1e293b",
+    borderColor: "#262932",
   },
-  taskItemDone: { backgroundColor: "rgba(52,211,153,0.05)", borderColor: "rgba(52,211,153,0.2)" },
+  taskItemDone: { backgroundColor: "rgba(16, 185, 129, 0.04)", borderColor: "rgba(16, 185, 129, 0.2)" },
   taskCheckbox: {
-    width: 22,
-    height: 22,
-    borderRadius: 6,
-    borderWidth: 2,
+    width: 18,
+    height: 18,
+    borderRadius: 4,
+    borderWidth: 1.5,
     borderColor: "#475569",
     alignItems: "center",
     justifyContent: "center",
     marginTop: 2,
   },
-  taskCheckboxDone: { backgroundColor: "#34d399", borderColor: "#34d399" },
-  taskTitle: { color: "#f8fafc", fontSize: 14, fontWeight: "600", lineHeight: 20 },
-  taskTitleDone: { color: "#64748b", textDecorationLine: "line-through" },
-  taskDesc: { color: "#94a3b8", fontSize: 12, lineHeight: 18, marginTop: 4 },
-  taskMetaRow: { flexDirection: "row", gap: 8, marginTop: 8, flexWrap: "wrap" },
+  taskCheckboxDone: { backgroundColor: "#10B981", borderColor: "#10B981" },
+  taskTitle: { color: "#F8FAFC", fontSize: 13, fontWeight: "600", lineHeight: 18 },
+  taskTitleDone: { color: "#64748B", textDecorationLine: "line-through" },
+  taskDesc: { color: "#94A3B8", fontSize: 11, lineHeight: 16, marginTop: 3 },
+  taskMetaRow: { flexDirection: "row", gap: 6, marginTop: 6, flexWrap: "wrap" },
   taskMetaTag: {
     flexDirection: "row",
     alignItems: "center",
-    backgroundColor: "rgba(255,255,255,0.05)",
-    paddingHorizontal: 8,
-    paddingVertical: 3,
+    backgroundColor: "rgba(255, 255, 255, 0.04)",
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  taskMetaText: { color: "#CBD5E1", fontSize: 10, fontWeight: "500" },
+
+  btnPressed: { opacity: 0.8 },
+});
+
+// ===========================================================================
+// STYLES: MEETING COPILOT (NOTEBOOKLM PATTERN)
+// ===========================================================================
+const copilotStyles = StyleSheet.create({
+  heroCard: {
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    padding: 16,
+    gap: 14,
+  },
+  heroHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 12,
+  },
+  heroIconBox: {
+    width: 36,
+    height: 36,
+    borderRadius: 8,
+    backgroundColor: "rgba(37, 99, 235, 0.12)",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  heroTitle: {
+    fontSize: 14,
+    fontWeight: "700",
+    color: "#F8FAFC",
+  },
+  heroSub: {
+    fontSize: 11,
+    color: "#94A3B8",
+    marginTop: 2,
+  },
+  groundedBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(16, 185, 129, 0.1)",
+    borderColor: "rgba(16, 185, 129, 0.25)",
+    borderWidth: 1,
+    paddingHorizontal: 7,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  groundedBadgeText: {
+    fontSize: 10,
+    color: "#10B981",
+    fontWeight: "600",
+  },
+  chipsSection: {
+    gap: 6,
+  },
+  chipsTitle: {
+    fontSize: 10,
+    color: "#64748B",
+    fontWeight: "700",
+    letterSpacing: 0.5,
+  },
+  chipsRow: {
+    flexDirection: "row",
+    flexWrap: "wrap",
+    gap: 6,
+  },
+  promptChip: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1A1D26",
+    borderColor: "#262932",
+    borderWidth: 1,
+    paddingHorizontal: 10,
+    paddingVertical: 6,
     borderRadius: 6,
   },
-  taskMetaText: { color: "#cbd5e1", fontSize: 11, fontWeight: "500" },
-  btnPressed: { opacity: 0.8 },
-});
-const s = StyleSheet.create({
-  safeArea: { flex: 1, backgroundColor: "#090D16" },
-  loadingContainer: { flex: 1, backgroundColor: "#090D16", alignItems: "center", justifyContent: "center" },
-  loadingText: { color: "#94a3b8", fontSize: 14, marginTop: 12 },
-  mainContainer: { flex: 1, width: "100%", maxWidth: 1200, alignSelf: "center" },
-
-  /* Nav */
-  navBar: { flexDirection: "row", alignItems: "center", justifyContent: "space-between", paddingHorizontal: 20, paddingVertical: 14, borderBottomWidth: 1, borderBottomColor: "rgba(255,255,255,0.06)" },
-  navLeft: { flexDirection: "row", alignItems: "center", gap: 12, flex: 1 },
-  backButton: { width: 38, height: 38, borderRadius: 10, backgroundColor: "#111827", borderWidth: 1, borderColor: "#1e293b", alignItems: "center", justifyContent: "center" },
-  navTitleBox: { flex: 1 },
-  navTitle: { color: "#f8fafc", fontSize: 18, fontWeight: "800" },
-  idBadge: { backgroundColor: "rgba(99,102,241,0.2)", paddingHorizontal: 6, paddingVertical: 1, borderRadius: 6, borderWidth: 1, borderColor: "rgba(99,102,241,0.3)" },
-  idBadgeText: { color: "#a5b4fc", fontSize: 11, fontWeight: "700" },
-  navSubtitle: { color: "#64748b", fontSize: 12, marginTop: 2 },
-  navRight: { flexDirection: "row", alignItems: "center" },
-  statusPill: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 10, paddingVertical: 5, borderRadius: 20, backgroundColor: "#111827", borderWidth: 1, borderColor: "#1e293b" },
-  statusPillRec: { backgroundColor: "rgba(248,113,113,0.15)", borderColor: "rgba(248,113,113,0.35)" },
-  statusPillProc: { backgroundColor: "rgba(251,191,36,0.15)", borderColor: "rgba(251,191,36,0.35)" },
-  statusPillDone: { backgroundColor: "rgba(52,211,153,0.15)", borderColor: "rgba(52,211,153,0.35)" },
-  statusDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#64748b" },
-  statusPillText: { color: "#cbd5e1", fontSize: 12, fontWeight: "600" },
-
-  /* Layout */
-  scrollContent: { padding: 20, paddingBottom: 60 },
-  grid: { flexDirection: Platform.OS === "web" ? "row" : "column", alignItems: "flex-start", gap: 20 },
-  leftCol: { width: Platform.OS === "web" ? 380 : "100%", flexShrink: 0 },
-  rightCol: { flex: 1, minWidth: 0, width: "100%" },
-
-  /* Control Card */
-  controlCard: { backgroundColor: "#111827", borderRadius: 20, padding: 24, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", alignItems: "center" },
-  heroRow: { flexDirection: "row", alignItems: "center", gap: 8, marginBottom: 10 },
-  heroLabel: { color: "#818cf8", fontSize: 11, fontWeight: "800", letterSpacing: 1.5 },
-  timerText: { color: "#475569", fontSize: 54, fontWeight: "900", letterSpacing: -1 },
-  timerActive: { color: "#f8fafc" },
-  timerHint: { color: "#64748b", fontSize: 13, marginBottom: 24 },
-
-  /* Mic Button */
-  micWrap: { alignItems: "center", justifyContent: "center", marginBottom: 24, position: "relative" },
-  micPulse: { position: "absolute", width: 170, height: 170, borderRadius: 85, borderWidth: 2, borderColor: "rgba(248,113,113,0.3)", backgroundColor: "rgba(248,113,113,0.06)" },
-  micAura: { position: "absolute", width: 140, height: 140, borderRadius: 70, backgroundColor: "rgba(99,102,241,0.08)", borderWidth: 1, borderColor: "rgba(99,102,241,0.2)" },
-  micAuraActive: { backgroundColor: "rgba(248,113,113,0.12)", borderColor: "rgba(248,113,113,0.35)" },
-  micBtn: { width: 110, height: 110, borderRadius: 55, backgroundColor: "#4f46e5", alignItems: "center", justifyContent: "center", shadowColor: "#6366f1", shadowOffset: { width: 0, height: 6 }, shadowOpacity: 0.5, shadowRadius: 18 },
-  micBtnActive: { backgroundColor: "#ef4444", shadowColor: "#ef4444" },
-
-  /* Action Buttons */
-  recActionBtn: { width: "100%", flexDirection: "row", alignItems: "center", justifyContent: "center", paddingVertical: 14, borderRadius: 14, marginBottom: 16 },
-  recActionStart: { backgroundColor: "#4f46e5" },
-  recActionStop: { backgroundColor: "#ef4444" },
-  recActionText: { color: "#ffffff", fontSize: 15, fontWeight: "700" },
-
-  /* Divider */
-  dividerRow: { flexDirection: "row", alignItems: "center", width: "100%", marginBottom: 16 },
-  dividerLine: { flex: 1, height: 1, backgroundColor: "rgba(255,255,255,0.08)" },
-  dividerText: { color: "#475569", fontSize: 11, fontWeight: "700", paddingHorizontal: 12 },
-
-  /* Upload */
-  uploadBtn: { width: "100%", flexDirection: "row", alignItems: "center", gap: 12, padding: 14, borderRadius: 14, backgroundColor: "#0F172A", borderWidth: 1, borderColor: "#1e293b", marginBottom: 12 },
-  uploadIconCircle: { width: 36, height: 36, borderRadius: 10, backgroundColor: "rgba(99,102,241,0.15)", alignItems: "center", justifyContent: "center" },
-  uploadTitle: { color: "#f8fafc", fontSize: 13, fontWeight: "700" },
-  uploadSub: { color: "#64748b", fontSize: 11, marginTop: 2 },
-  selectedFileBox: { flexDirection: "row", alignItems: "center", gap: 8, width: "100%", paddingHorizontal: 14, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(99,102,241,0.08)", borderWidth: 1, borderColor: "rgba(99,102,241,0.2)", marginBottom: 12 },
-  selectedFileName: { flex: 1, color: "#a5b4fc", fontSize: 12, fontWeight: "600" },
-  selectedFileSize: { color: "#64748b", fontSize: 11 },
-
-  /* Features */
-  featureBox: { width: "100%", gap: 8 },
-  featurePill: { flexDirection: "row", alignItems: "center", gap: 8, paddingHorizontal: 12, paddingVertical: 8, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.03)" },
-  featurePillText: { color: "#94a3b8", fontSize: 12, fontWeight: "500" },
-
-  /* Idle */
-  idleCard: { backgroundColor: "#111827", borderRadius: 20, padding: 32, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", alignItems: "center" },
-  idleIconBox: { width: 72, height: 72, borderRadius: 22, backgroundColor: "rgba(99,102,241,0.15)", borderWidth: 1, borderColor: "rgba(99,102,241,0.3)", alignItems: "center", justifyContent: "center", marginBottom: 16 },
-  idleTitle: { color: "#f8fafc", fontSize: 20, fontWeight: "800", marginBottom: 8 },
-  idleSub: { color: "#94a3b8", fontSize: 14, textAlign: "center", lineHeight: 22, maxWidth: 520, marginBottom: 28 },
-  capList: { width: "100%", gap: 16 },
-  capItem: { flexDirection: "row", alignItems: "flex-start", gap: 14, padding: 16, borderRadius: 14, backgroundColor: "#0F172A", borderWidth: 1, borderColor: "#1e293b" },
-  capBullet: { width: 36, height: 36, borderRadius: 10, backgroundColor: "rgba(255,255,255,0.04)", alignItems: "center", justifyContent: "center" },
-  capHead: { color: "#f8fafc", fontSize: 14, fontWeight: "700", marginBottom: 4 },
-  capBody: { color: "#94a3b8", fontSize: 12, lineHeight: 18 },
-
-  /* Recording Feedback */
-  recFeedbackCard: { backgroundColor: "#111827", borderRadius: 20, padding: 40, borderWidth: 1, borderColor: "rgba(248,113,113,0.2)", alignItems: "center" },
-  waveContainer: { flexDirection: "row", alignItems: "center", justifyContent: "center", height: 40, marginBottom: 20 },
-  recFeedTitle: { color: "#f8fafc", fontSize: 18, fontWeight: "800", marginBottom: 6 },
-  recFeedSub: { color: "#94a3b8", fontSize: 13, textAlign: "center", lineHeight: 20, maxWidth: 420 },
-
-  /* Error */
-  errorCard: { backgroundColor: "#111827", borderRadius: 20, padding: 32, borderWidth: 1, borderColor: "rgba(248,113,113,0.3)", alignItems: "center" },
-  errorIconBox: { width: 64, height: 64, borderRadius: 20, backgroundColor: "rgba(248,113,113,0.15)", alignItems: "center", justifyContent: "center", marginBottom: 14 },
-  errorTitle: { color: "#f87171", fontSize: 18, fontWeight: "800", marginBottom: 6 },
-  errorMsg: { color: "#f8fafc", fontSize: 14, fontWeight: "600", textAlign: "center", marginBottom: 4 },
-  errorDtl: { color: "#94a3b8", fontSize: 12, textAlign: "center", lineHeight: 18, marginBottom: 20 },
-  retryBtn: { flexDirection: "row", alignItems: "center", backgroundColor: "#4f46e5", paddingHorizontal: 20, paddingVertical: 12, borderRadius: 12 },
-  retryBtnText: { color: "#fff", fontWeight: "700", fontSize: 14 },
-
-  btnPressed: { opacity: 0.8 },
-});
-
-/* Processing Styles */
-const procStyles = StyleSheet.create({
-  container: { backgroundColor: "#111827", borderRadius: 20, padding: 28, borderWidth: 1, borderColor: "rgba(255,255,255,0.08)", alignItems: "center" },
-  ringBox: { width: 100, height: 100, alignItems: "center", justifyContent: "center", marginBottom: 20, position: "relative" },
-  staticRing: { width: 100, height: 100, borderRadius: 50, borderWidth: 3, borderColor: "rgba(99,102,241,0.15)" },
-  spinRing: { position: "absolute", width: 100, height: 100, borderRadius: 50, borderWidth: 3, borderColor: "transparent", borderTopColor: "#6366f1", borderRightColor: "#8b5cf6" },
-  centerPercent: { position: "absolute", alignItems: "center", justifyContent: "center" },
-  percentText: { color: "#f8fafc", fontSize: 22, fontWeight: "900" },
-  title: { color: "#f8fafc", fontSize: 18, fontWeight: "800", marginBottom: 4 },
-  detail: { color: "#94a3b8", fontSize: 13, textAlign: "center", maxWidth: 440, lineHeight: 20, marginBottom: 16 },
-  progressBarBg: { width: "100%", height: 6, borderRadius: 3, backgroundColor: "rgba(99,102,241,0.15)", marginBottom: 20, overflow: "hidden" },
-  progressBarFill: { height: 6, borderRadius: 3, backgroundColor: "#6366f1" },
-  stepList: { width: "100%", gap: 10, marginBottom: 16 },
-  stepItem: { flexDirection: "row", alignItems: "center", gap: 12, backgroundColor: "#0F172A", borderRadius: 14, padding: 14, borderWidth: 1, borderColor: "#1e293b" },
-  stepItemActive: { borderColor: "rgba(99,102,241,0.4)", backgroundColor: "rgba(99,102,241,0.05)" },
-  stepCircle: { width: 32, height: 32, borderRadius: 16, backgroundColor: "#1e293b", alignItems: "center", justifyContent: "center" },
-  stepCircleActive: { backgroundColor: "rgba(99,102,241,0.2)", borderWidth: 1, borderColor: "#6366f1" },
-  stepCircleDone: { backgroundColor: "#34d399", borderColor: "#34d399" },
-  stepNum: { color: "#64748b", fontSize: 12, fontWeight: "700" },
-  stepTitle: { color: "#f8fafc", fontSize: 13, fontWeight: "700" },
-  stepSub: { color: "#64748b", fontSize: 11, marginTop: 2 },
-  liveTranscriptBox: { width: "100%", backgroundColor: "#0F172A", borderRadius: 14, borderWidth: 1, borderColor: "#1e293b", overflow: "hidden" },
-  liveTranscriptHeader: { flexDirection: "row", alignItems: "center", gap: 6, paddingHorizontal: 14, paddingVertical: 10, borderBottomWidth: 1, borderBottomColor: "#1e293b" },
-  liveTranscriptTitle: { color: "#a5b4fc", fontSize: 12, fontWeight: "700", flex: 1 },
-  liveDot: { width: 6, height: 6, borderRadius: 3, backgroundColor: "#34d399" },
-  liveTranscriptScroll: { maxHeight: 200, padding: 14 },
-  liveTranscriptText: { color: "#cbd5e1", fontSize: 12, lineHeight: 20, fontFamily: Platform.OS === "web" ? "monospace" : undefined },
+  promptChipText: {
+    fontSize: 11,
+    color: "#CBD5E1",
+  },
+  inputRow: {
+    flexDirection: "row",
+    gap: 8,
+    alignItems: "center",
+  },
+  questionInput: {
+    flex: 1,
+    backgroundColor: "#111318",
+    borderWidth: 1,
+    borderColor: "#262932",
+    borderRadius: 8,
+    paddingHorizontal: 12,
+    paddingVertical: 9,
+    color: "#F8FAFC",
+    fontSize: 13,
+  },
+  askSubmitBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#2563EB",
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 8,
+  },
+  askSubmitText: {
+    fontSize: 13,
+    fontWeight: "600",
+    color: "#FFFFFF",
+  },
+  btnPressed: {
+    opacity: 0.8,
+  },
+  loadingCard: {
+    padding: 32,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    gap: 12,
+  },
+  loadingText: {
+    fontSize: 12,
+    color: "#94A3B8",
+  },
+  answerCard: {
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    padding: 16,
+    gap: 12,
+  },
+  answerHeader: {
+    flexDirection: "row",
+    justifyContent: "space-between",
+    alignItems: "center",
+    borderBottomWidth: 1,
+    borderBottomColor: "#262932",
+    paddingBottom: 10,
+  },
+  engineBadge: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "rgba(37, 99, 235, 0.08)",
+    borderColor: "rgba(37, 99, 235, 0.2)",
+    borderWidth: 1,
+    paddingHorizontal: 8,
+    paddingVertical: 3,
+    borderRadius: 4,
+  },
+  engineText: {
+    fontSize: 11,
+    fontWeight: "600",
+  },
+  copyBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    backgroundColor: "#1A1D26",
+    paddingHorizontal: 9,
+    paddingVertical: 4,
+    borderRadius: 5,
+    borderWidth: 1,
+    borderColor: "#262932",
+  },
+  copyText: {
+    fontSize: 11,
+    color: "#94A3B8",
+  },
+  answerScroll: {
+    maxHeight: 460,
+  },
+  answerBody: {
+    fontSize: 13,
+    color: "#E2E8F0",
+    lineHeight: 22,
+  },
+  emptyCard: {
+    padding: 36,
+    alignItems: "center",
+    justifyContent: "center",
+    backgroundColor: "#161920",
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: "#262932",
+    gap: 10,
+  },
+  emptyIconBox: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: "#1A1D26",
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  emptyTitle: {
+    fontSize: 14,
+    fontWeight: "600",
+    color: "#F8FAFC",
+  },
+  emptySub: {
+    fontSize: 12,
+    color: "#94A3B8",
+    textAlign: "center",
+    maxWidth: 440,
+  },
 });

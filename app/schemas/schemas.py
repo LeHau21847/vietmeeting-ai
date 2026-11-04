@@ -149,6 +149,26 @@ class MeetingSummary(OrmBase):
     status: MeetingStatus
     audio_file_url: str | None
     created_at: datetime
+    task_count: int = 0
+    completed_task_count: int = 0
+    summary_snippet: str | None = None
+
+
+class MeetingAskRequest(BaseModel):
+    """Schema câu hỏi gửi tới trợ lý họp AI (Meeting Copilot)."""
+    question: str = Field(
+        ...,
+        min_length=2,
+        max_length=2000,
+        examples=["Tóm tắt 3 kết luận quan trọng nhất của cuộc họp?"],
+    )
+
+
+class MeetingAskResponse(BaseModel):
+    """Schema phản hồi từ trợ lý họp AI."""
+    answer: str
+    engine: str = Field(default="gemini", description="Engine đã sinh câu trả lời: gemini | local")
+
 
 
 # ===========================================================================

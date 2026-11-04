@@ -22,10 +22,12 @@ import logging
 import sys
 from contextlib import asynccontextmanager
 from datetime import datetime
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
 # Cấu hình logging – phải thiết lập trước khi import các module khác
@@ -178,26 +180,64 @@ app.include_router(tasks.router)
 
 
 # ===========================================================================
-# Endpoints chung
+# Tích hợp Giao diện Web tĩnh (Single Port Architecture - Port 8000)
 # ===========================================================================
-@app.get(
-    "/",
-    summary="Root",
-    description="Thông tin cơ bản về API.",
-    tags=["System"],
-)
-async def root() -> JSONResponse:
-    """Trả về thông tin cơ bản về service."""
-    return JSONResponse(
-        content={
-            "service": "VietMeeting AI Backend",
-            "version": "1.0.0",
-            "status": "running",
-            "docs": "/docs",
-            "redoc": "/redoc",
-            "timestamp": datetime.now().isoformat(),
-        }
+WEB_DIST_DIR = Path(__file__).resolve().parent / "mobile" / "dist"
+
+if WEB_DIST_DIR.exists() and (WEB_DIST_DIR / "index.html").exists():
+    logger.info("🌐 Đã tìm thấy bản build giao diện Web tại %s. Kích hoạt Web Serving trên cổng 8000.", WEB_DIST_DIR)
+
+    # 1. Mount các thư mục tài nguyên tĩnh của Expo
+    expo_dir = WEB_DIST_DIR / "_expo"
+    if expo_dir.exists():
+        app.mount("/_expo", StaticFiles(directory=str(expo_dir)), name="expo_static")
+
+    assets_dir = WEB_DIST_DIR / "assets"
+    if assets_dir.exists():
+        app.mount("/assets", StaticFiles(directory=str(assets_dir)), name="assets_static")
+
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        fav = WEB_DIST_DIR / "favicon.ico"
+        if fav.exists():
+            return FileResponse(str(fav))
+        return JSONResponse({"status": "no_favicon"})
+
+    # 2. Trang chủ Web
+    @app.get("/", include_in_schema=False)
+    async def serve_index():
+        return FileResponse(str(WEB_DIST_DIR / "index.html"))
+
+    # 3. Fallback cho Single Page Application (SPA)
+    @app.get("/{full_path:path}", include_in_schema=False)
+    async def serve_spa(full_path: str):
+        if full_path.startswith(("api", "docs", "redoc", "openapi.json", "health")):
+            raise HTTPException(status_code=404, detail="Not Found")
+        target_file = WEB_DIST_DIR / full_path
+        if target_file.is_file():
+            return FileResponse(str(target_file))
+        return FileResponse(str(WEB_DIST_DIR / "index.html"))
+else:
+    logger.warning("⚠️ Không tìm thấy thư mục build web (%s). Chỉ phục vụ API Backend.", WEB_DIST_DIR)
+
+    @app.get(
+        "/",
+        summary="Root",
+        description="Thông tin cơ bản về API.",
+        tags=["System"],
     )
+    async def root() -> JSONResponse:
+        """Trả về thông tin cơ bản về service."""
+        return JSONResponse(
+            content={
+                "service": "VietMeeting AI Backend",
+                "version": "1.0.0",
+                "status": "running",
+                "docs": "/docs",
+                "redoc": "/redoc",
+                "timestamp": datetime.now().isoformat(),
+            }
+        )
 
 
 @app.get(

@@ -24,12 +24,17 @@ from app.models.models import Meeting, MeetingStatus, Task, TaskStatus
 from app.schemas.schemas import (
     AIRewriteRequest,
     ErrorResponse,
+    MeetingAskRequest,
+    MeetingAskResponse,
     MeetingCreate,
     MeetingRead,
     MeetingSummary,
     MeetingUpdate,
 )
-from app.services.ai_service import rewrite_meeting_minutes_and_tasks
+from app.services.ai_service import (
+    ask_meeting_assistant,
+    rewrite_meeting_minutes_and_tasks,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -119,6 +124,7 @@ async def list_meetings(
     try:
         stmt = (
             select(Meeting)
+            .options(selectinload(Meeting.tasks))
             .order_by(Meeting.created_at.desc())
             .offset(skip)
             .limit(limit)
@@ -126,8 +132,38 @@ async def list_meetings(
         result = await db.execute(stmt)
         meetings = result.scalars().all()
 
-        logger.info("📋 Trả về %d meeting(s) (skip=%d, limit=%d)", len(meetings), skip, limit)
-        return [MeetingSummary.model_validate(m) for m in meetings]
+        output: list[MeetingSummary] = []
+        for m in meetings:
+            clean_snippet: str | None = None
+            if m.final_minutes:
+                cleaned = re.sub(r'[#*`_>\[\]\-•]', ' ', m.final_minutes)
+                cleaned = ' '.join(cleaned.split())
+                if cleaned:
+                    clean_snippet = cleaned[:135] + ("..." if len(cleaned) > 135 else "")
+            elif m.description:
+                cleaned = ' '.join(m.description.split())
+                if cleaned:
+                    clean_snippet = cleaned[:135] + ("..." if len(cleaned) > 135 else "")
+
+            tasks = m.tasks or []
+            task_count = len(tasks)
+            completed_task_count = sum(1 for t in tasks if t.status == TaskStatus.DONE)
+
+            output.append(
+                MeetingSummary(
+                    id=m.id,
+                    title=m.title,
+                    status=m.status,
+                    audio_file_url=m.audio_file_url,
+                    created_at=m.created_at,
+                    task_count=task_count,
+                    completed_task_count=completed_task_count,
+                    summary_snippet=clean_snippet,
+                )
+            )
+
+        logger.info("📋 Trả về %d meeting(s) (skip=%d, limit=%d)", len(output), skip, limit)
+        return output
 
     except Exception as exc:
         logger.error("❌ Lỗi lấy danh sách meeting: %s", str(exc), exc_info=True)
@@ -361,6 +397,74 @@ async def ai_rewrite_meeting(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail={"error": "ai_rewrite_error", "message": f"Lỗi biên tập AI: {str(exc)}"},
         )
+
+
+# ===========================================================================
+# POST /api/v1/meetings/{meeting_id}/ask – Hỏi đáp thông minh (Meeting Copilot)
+# ===========================================================================
+@router.post(
+    "/{meeting_id}/ask",
+    response_model=MeetingAskResponse,
+    status_code=status.HTTP_200_OK,
+    summary="Hỏi đáp thông minh với nội dung cuộc họp (Meeting Copilot)",
+    description="Trợ lý AI trả lời các câu hỏi dựa trên biên bản, bản gỡ băng và nhiệm vụ của cuộc họp.",
+    responses={
+        200: {"description": "Thành công", "model": MeetingAskResponse},
+        404: {"description": "Không tìm thấy cuộc họp", "model": ErrorResponse},
+        500: {"description": "Lỗi server", "model": ErrorResponse},
+    },
+)
+async def ask_meeting(
+    meeting_id: int,
+    body: MeetingAskRequest,
+    db: AsyncSession = Depends(get_db),
+) -> MeetingAskResponse:
+    """Trợ lý AI trả lời câu hỏi bám sát 100% vào nội dung cuộc họp."""
+    try:
+        meeting = await db.get(Meeting, meeting_id, options=[selectinload(Meeting.tasks)])
+        if not meeting:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail={
+                    "error": "meeting_not_found",
+                    "message": f"Không tìm thấy cuộc họp với ID={meeting_id}",
+                },
+            )
+
+        tasks_info = []
+        for t in (meeting.tasks or []):
+            due_str = None
+            if getattr(t, "due_date", None):
+                due_str = t.due_date.strftime("%d/%m/%Y") if hasattr(t.due_date, "strftime") else str(t.due_date)
+            st_val = t.status.value if hasattr(t.status, "value") else str(t.status)
+            tasks_info.append({
+                "title": t.title,
+                "description": t.description,
+                "status": st_val,
+                "due_date": due_str,
+                "assignee_name": t.assignee.full_name if getattr(t, "assignee", None) else None,
+            })
+
+        res = await ask_meeting_assistant(
+            question=body.question.strip(),
+            minutes=meeting.final_minutes,
+            transcript=meeting.raw_transcript,
+            tasks_info=tasks_info,
+        )
+
+        return MeetingAskResponse(
+            answer=res.get("answer", "Không thể tạo câu trả lời."),
+            engine=res.get("engine", "gemini"),
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error("❌ Lỗi Meeting Copilot Ask (meeting_id=%d): %s", meeting_id, str(exc), exc_info=True)
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail={"error": "copilot_ask_error", "message": f"Lỗi trợ lý hỏi đáp: {str(exc)}"},
+        )
+
 
 
 # ===========================================================================

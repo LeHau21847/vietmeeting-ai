@@ -1683,3 +1683,107 @@ LƯU Ý BẮT BUỘC:
         "_processing_time_seconds": round(elapsed, 2),
         "mode": mode_normalized,
     }
+
+
+async def ask_meeting_assistant(
+    question: str,
+    minutes: str | None = None,
+    transcript: str | None = None,
+    tasks_info: list[dict[str, Any]] | None = None,
+) -> dict[str, str]:
+    """
+    Trợ lý hỏi đáp bám sát nội dung cuộc họp (Grounded Meeting Copilot - NotebookLM Pattern).
+    Sử dụng Gemini API hoặc fallback sang Local Ollama.
+    """
+    system_instruction = (
+        "Bạn là Trợ lý Thư ký Cuộc họp AI (VietMeeting Copilot) thông minh, chuyên nghiệp và trung thực. "
+        "Nhiệm vụ của bạn là giải đáp thắc mắc của người dùng dựa TRÊN NỘI DUNG CUỘC HỌP được cung cấp (gồm Biên bản, Bản gỡ băng và Danh sách công việc). "
+        "NGUYÊN TẮC BẮT BUỘC:\n"
+        "1. Chỉ trả lời dựa trên các dữ kiện có thật trong tài liệu được cung cấp. Tuyệt đối không bịa đặt, không suy diễn thông tin ngoài biên bản.\n"
+        "2. Nếu tài liệu không đề cập đến thông tin được hỏi, hãy trả lời nhã nhặn rằng nội dung cuộc họp chưa đề cập hoặc chưa quyết định vấn đề này.\n"
+        "3. Trình bày câu trả lời gãy gọn, mạch lạc, dùng các gạch đầu dòng rõ ràng, chuẩn phong cách hành chính/doanh nghiệp Việt Nam."
+    )
+
+    context_parts: list[str] = []
+    if minutes and minutes.strip():
+        context_parts.append(f"### BIÊN BẢN CUỘC HỌP:\n{minutes.strip()}")
+    if tasks_info and len(tasks_info) > 0:
+        task_lines: list[str] = []
+        for idx, t in enumerate(tasks_info, 1):
+            assignee = t.get("assignee_name") or "Chưa rõ"
+            due = t.get("due_date") or "Kế hoạch sắp tới"
+            st = t.get("status") or "pending"
+            task_lines.append(f"- Nhiệm vụ {idx}: {t.get('title')} (Phụ trách: {assignee} | Hạn chót: {due} | Trạng thái: {st})")
+        context_parts.append("### DANH SÁCH CÔNG VIỆC / CHỈ ĐẠO:\n" + "\n".join(task_lines))
+    if transcript and transcript.strip():
+        # Lấy tối đa 16000 ký tự transcript để đảm bảo context
+        context_parts.append(f"### BẢN GỠ BĂNG ÂM THANH GỐC (TRÍCH YẾU):\n{transcript.strip()[:16000]}")
+
+    full_context = "\n\n".join(context_parts) if context_parts else "Chưa có nội dung biên bản hoặc bản gỡ băng cho cuộc họp này."
+
+    user_prompt = f"""Dưới đây là toàn bộ dữ liệu của cuộc họp:
+---
+{full_context}
+---
+
+CÂU HỎI CỦA NGƯỜI DÙNG:
+"{question}"
+
+Hãy trả lời câu hỏi trên một cách chính xác, mạch lạc và bám sát tuyệt đối vào dữ liệu cuộc họp."""
+
+    has_gemini = bool(_GEMINI_API_KEY and len(_GEMINI_API_KEY.strip()) > 10)
+    answer_text = ""
+    engine_used = "gemini"
+
+    if has_gemini and _PREFERRED_AI_ENGINE != "local":
+        try:
+            logger.info("🤖 [Copilot Q&A] Đang truy vấn câu trả lời qua Gemini API...")
+            answer_text = await _call_gemini_generate_content(
+                parts=[{"text": user_prompt}],
+                system_instruction=system_instruction,
+                api_key=_GEMINI_API_KEY,
+                models_override=GEMINI_TEXT_MODELS,
+            )
+            answer_text = answer_text.strip()
+            engine_used = "gemini"
+        except Exception as gemini_err:
+            logger.warning("⚠️ [Copilot Q&A] Gemini API lỗi (%s). Chuyển sang Local AI...", gemini_err)
+
+    if not answer_text:
+        try:
+            logger.info("💻 [Copilot Q&A] Đang truy vấn qua Local Ollama (%s)...", OLLAMA_MODEL)
+            loop = asyncio.get_running_loop()
+            res = await loop.run_in_executor(
+                _executor,
+                lambda: ollama.chat(
+                    model=OLLAMA_MODEL,
+                    messages=[
+                        {"role": "system", "content": system_instruction},
+                        {"role": "user", "content": user_prompt[:8000]},
+                    ],
+                    options={"temperature": 0.2},
+                ),
+            )
+            answer_text = res.get("message", {}).get("content", "").strip()
+            engine_used = "local"
+        except Exception as local_err:
+            logger.warning("⚠️ [Copilot Q&A] Local Ollama lỗi (%s). Fallback extractive...", local_err)
+
+    if not answer_text:
+        # Fallback heuristic
+        matched_tasks = [t for t in (tasks_info or []) if any(w in t.get("title", "").lower() for w in question.lower().split())]
+        if matched_tasks:
+            summary = "\n".join([f"- {t.get('title')} (Phụ trách: {t.get('assignee_name') or 'Cơ quan liên quan'})" for t in matched_tasks])
+            answer_text = f"Dựa trên dữ liệu cuộc họp, các nội dung liên quan trực tiếp đến câu hỏi gồm:\n{summary}"
+        elif minutes:
+            clean = re.sub(r'[#*`_>]', '', minutes)
+            answer_text = f"Thông tin tóm tắt từ biên bản cuộc họp:\n{clean[:400]}..."
+        else:
+            answer_text = "Hiện chưa có đủ dữ liệu biên bản hoặc bản gỡ băng chi tiết để giải đáp câu hỏi này."
+        engine_used = "local"
+
+    return {
+        "answer": answer_text,
+        "engine": engine_used,
+    }
+
