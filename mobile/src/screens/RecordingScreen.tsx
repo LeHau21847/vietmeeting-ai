@@ -1421,7 +1421,7 @@ function ResultDashboard({
   const [copilotQuestion, setCopilotQuestion] = useState("");
   const [copilotLoading, setCopilotLoading] = useState(false);
   const [copilotAnswer, setCopilotAnswer] = useState<string | null>(null);
-  const [copilotEngine, setCopilotEngine] = useState<string | null>(null);
+  const [copilotEngine, setCopilotEngine] = useState<string | null>("gemini");
   const [copilotCopied, setCopilotCopied] = useState(false);
 
   // Chế độ loại văn bản hành chính: "minutes" (Biên bản cuộc họp) | "notice" (Thông báo kết luận)

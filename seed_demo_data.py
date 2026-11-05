@@ -15,7 +15,10 @@ from datetime import datetime
 if sys.platform == "win32" and hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
 
-DB_PATH = "vietmeeting.db"
+from pathlib import Path
+
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "vietmeeting.db"
 
 MEETING_1_TITLE = "Họp giao ban đánh giá tiến độ Chuyển đổi số & Triển khai phần mềm Quý IV/2026"
 MEETING_1_DESC = "Đánh giá toàn diện tiến độ số hóa tài liệu, tích hợp hệ thống ký số điện tử và ứng dụng trợ lý ảo VietMeeting AI vào quy trình xử lý văn bản nội bộ."
@@ -311,6 +314,13 @@ def seed():
     print(f"✅ Trạng thái Task sau chuẩn hóa: {cur.fetchall()}")
 
     conn.close()
+
+    # Bước 3: Đồng bộ Meeting #1 (Phiên họp Quốc hội 6 diễn giả) chuẩn Thư ký Hành chính
+    try:
+        from scripts.update_meeting_1_perfect import update_meeting_1
+        update_meeting_1()
+    except Exception as qh_err:
+        print(f"ℹ️ Không thể đồng bộ Meeting 1 Quốc hội: {qh_err}")
 
     print("\n" + "=" * 65)
     print(f"🎉 HOÀN THÀNH ĐỒNG BỘ DỮ LIỆU MẪU!")

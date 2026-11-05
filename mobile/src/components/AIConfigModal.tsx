@@ -368,8 +368,10 @@ export function AIEngineBadge({
 
   const activeConfig = currentConfig || internalConfig;
   const isGemini =
-    activeConfig?.active_engine === "gemini" ||
-    (Boolean(activeConfig?.has_gemini_key) && activeConfig?.preferred_engine !== "local");
+    !activeConfig ||
+    activeConfig.active_engine === "gemini" ||
+    activeConfig.preferred_engine === "gemini" ||
+    (Boolean(activeConfig.has_gemini_key) && activeConfig.preferred_engine !== "local");
 
   return (
     <Pressable

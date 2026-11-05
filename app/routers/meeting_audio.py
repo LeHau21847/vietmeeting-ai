@@ -586,18 +586,27 @@ async def process_meeting_audio(
             },
         )
     except RuntimeError as exc:
-        logger.warning("⚠️ Lỗi chuyển đổi giọng nói: %s. Kích hoạt chế độ dự phòng an toàn...", str(exc))
-        raw_transcript = (
-            f"[GHI NHẬN ÂM THANH] Cuộc họp đã tiếp nhận file âm thanh thành công. "
-            f"Hệ thống tự động kích hoạt tổng hợp nội dung và phân công nhiệm vụ."
+        err_msg = str(exc)
+        logger.error("❌ Lỗi bóc băng âm thanh cuộc họp: %s", err_msg)
+        await _mark_meeting_failed(db, meeting, err_msg)
+        update_progress(
+            meeting_id,
+            status="failed",
+            progress_percent=0,
+            current_step_detail=f"Lỗi bóc băng âm thanh: {err_msg}",
         )
-        transcription_meta = {
-            "language_detected": "vi",
-            "audio_duration_seconds": 0.0,
-            "transcription_time_seconds": 0.0,
-            "segments_count": 0,
-            "fallback_note": str(exc),
-        }
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail={
+                "error": "transcription_failed",
+                "message": (
+                    f"Không thể bóc băng file âm thanh cuộc họp: {err_msg}. "
+                    "Vui lòng kiểm tra lại cấu hình GEMINI_API_KEY chuẩn (bắt đầu bằng 'AIzaSy...') "
+                    "trong menu Cấu hình AI hoặc đảm bảo máy chủ hỗ trợ bóc băng giọng nói."
+                ),
+                "detail": err_msg,
+            },
+        )
 
     # =========================================================================
     # BƯỚC 7: Lưu raw_transcript vào DB
