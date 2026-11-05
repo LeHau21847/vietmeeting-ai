@@ -170,6 +170,15 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def add_pna_and_cors_headers(request, call_next):
+    """Đảm bảo mọi request và preflight PNA (Private Network Access) của Chrome/Cốc Cốc đều thành công."""
+    response = await call_next(request)
+    if request.headers.get("access-control-request-private-network"):
+        response.headers["Access-Control-Allow-Private-Network"] = "true"
+    return response
+
+
 # ===========================================================================
 # Include Routers
 # ===========================================================================

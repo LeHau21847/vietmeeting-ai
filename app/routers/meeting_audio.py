@@ -725,13 +725,28 @@ async def process_meeting_audio(
 
         # Lưu vào DB
         try:
+            t_title = task_data.get("title", "Công việc không có tiêu đề")
+            t_desc = task_data.get("description", "")
+            t_assignee = task_data.get("assignee_name") or task_data.get("assignee")
+            t_due = task_data.get("due_date") or task_data.get("deadline")
+
+            extras = []
+            if t_assignee:
+                extras.append(f"Phụ trách: {t_assignee}")
+            if t_due:
+                extras.append(f"Thời hạn: {t_due}")
+
+            if extras:
+                extra_str = " | ".join(extras)
+                t_desc = f"[{extra_str}] {t_desc}" if t_desc else f"[{extra_str}]"
+
             new_task = Task(
                 meeting_id=meeting_id,
-                assignee_id=None,  # Chưa map với User.id – cần logic nghiệp vụ riêng
-                title=task_data.get("title", "Công việc không có tiêu đề"),
-                description=task_data.get("description"),
+                assignee_id=None,  # Chưa map với User.id
+                title=t_title,
+                description=t_desc,
                 status=TaskStatus.PENDING,
-                due_date=None,  # Chuỗi tự do (ví dụ: "thứ 6") cần parse riêng
+                due_date=None,
             )
             db.add(new_task)
             saved_tasks_count += 1

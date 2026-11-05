@@ -30,10 +30,12 @@ function resolveBackendBaseUrl(): string {
   if (Platform.OS === "web") {
     try {
       if (typeof window !== "undefined" && window.location) {
-        const { protocol, hostname, origin } = window.location;
+        const { protocol, hostname, origin, port } = window.location;
 
-        // 1. Nếu là HTTPS hoặc tên miền công khai Internet (Render, Cloudflare Tunnel, ngrok, localtunnel)
+        // 1. Khi chạy trực tiếp trên cùng server Backend (cổng 8000) hoặc qua HTTPS/Cloudflare Tunnel:
+        // Dùng chính origin để đảm bảo Same-Origin 100%, tuyệt đối không bị lỗi CORS/PNA/sai IP.
         if (
+          port === String(BACKEND_PORT) ||
           protocol === "https:" ||
           (hostname &&
             hostname.includes(".") &&
@@ -45,14 +47,12 @@ function resolveBackendBaseUrl(): string {
           return origin;
         }
 
-        // 2. Nếu đang chạy cục bộ trên máy tính (localhost hoặc 127.0.0.1):
-        // Bắt buộc gọi IPv4 127.0.0.1:8000 để tránh Windows IPv6 (::1) Connection Refused
-        if (!hostname || hostname === "localhost" || hostname === "127.0.0.1") {
-          return `http://127.0.0.1:${BACKEND_PORT}`;
+        // 2. Khi chạy qua Expo Dev Server (cổng 8081 / 19006):
+        // Trỏ về cổng 8000 với cùng hostname đang truy cập
+        if (hostname) {
+          return `${protocol}//${hostname}:${BACKEND_PORT}`;
         }
-
-        // 3. Nếu truy cập qua IP mạng LAN (ví dụ 192.168.1.x)
-        return `http://${hostname}:${BACKEND_PORT}`;
+        return `http://127.0.0.1:${BACKEND_PORT}`;
       }
     } catch {
       // Fallback nếu window chưa sẵn sàng

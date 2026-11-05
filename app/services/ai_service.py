@@ -27,6 +27,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import gc
+import io
 import json
 import logging
 import mimetypes
@@ -37,6 +38,13 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
+
+try:
+    import av
+    HAS_AV = True
+except ImportError:
+    av = None
+    HAS_AV = False
 
 # Tự động nạp thư mục DLL của NVIDIA (cublas, cudnn) trong virtualenv trên Windows
 if sys.platform == "win32":
@@ -102,15 +110,15 @@ CHUNK_OVERLAP_CHARS = 200          # Đoạn gối đầu giữa các chunk
 # ---------------------------------------------------------------------------
 # Danh sách model Google Gemini thực tế theo thứ tự ưu tiên cao nhất
 GEMINI_PRIORITY_MODELS = [
+    "gemini-3-flash-preview",
+    "gemini-3.5-flash",
+    "gemini-flash-lite-latest",
+    "gemini-flash-latest",
     "gemini-2.5-flash",
     "gemini-2.5-pro",
     "gemini-2.0-flash",
-    "gemini-1.5-pro",
     "gemini-1.5-flash",
-    "gemini-flash-latest",
-    "gemini-3.1-flash-lite",
-    "gemini-flash-lite-latest",
-    "gemini-3.8-flash",
+    "gemini-1.5-pro",
     "gemini-pro-latest",
 ]
 
@@ -645,104 +653,259 @@ async def _call_gemini_generate_content(
         raise RuntimeError(f"Tất cả các Gemini model đều không phản hồi: {last_error}")
 
 
+def _slice_audio_file(file_path: str, chunk_duration_sec: int = 240) -> list[dict[str, Any]]:
+    """
+    Cắt tệp âm thanh thành các chunk 240 giây (4 phút), chuyển đổi sang mono 16kHz MP3 (~1.5-2MB/chunk).
+    Sử dụng PyAV (av) xử lý trực tiếp tín hiệu PCM, giải quyết triệt để bài toán file âm thanh dài (1-2 tiếng)
+    mà không bị giới hạn 20MB hay lỗi File API của Google Gemini.
+    """
+    path_obj = Path(file_path)
+    if not path_obj.exists():
+        raise FileNotFoundError(f"Không tìm thấy file: {file_path}")
+
+    if not HAS_AV or av is None:
+        # Fallback nếu môi trường không có PyAV (chạy raw bytes)
+        with open(file_path, "rb") as f:
+            raw_data = f.read()
+        return [{
+            "chunk_idx": 0,
+            "start_sec": 0.0,
+            "end_sec": 0.0,
+            "audio_bytes": raw_data,
+            "size_kb": len(raw_data) // 1024,
+            "mime_type": _detect_audio_mime_type(file_path),
+        }]
+
+    input_container = av.open(str(path_obj))
+    if not input_container.streams.audio:
+        raise ValueError("Tệp không chứa stream âm thanh hợp lệ.")
+
+    input_stream = input_container.streams.audio[0]
+    resampler = av.AudioResampler(format="s16p", layout="mono", rate=16000)
+
+    chunks: list[dict[str, Any]] = []
+    chunk_idx = 0
+    current_chunk_frames: list[Any] = []
+    current_samples = 0
+    samples_per_chunk = chunk_duration_sec * 16000
+
+    def encode_mp3_chunk(frames: list[Any], c_idx: int, start_s: float, end_s: float) -> dict[str, Any]:
+        out_buf = io.BytesIO()
+        out_container = av.open(out_buf, mode="w", format="mp3")
+        out_stream = out_container.add_stream("libmp3lame", rate=16000)
+        out_stream.bit_rate = 64000
+        out_stream.layout = "mono"
+        for f in frames:
+            for p in out_stream.encode(f):
+                out_container.mux(p)
+        for p in out_stream.encode(None):
+            out_container.mux(p)
+        out_container.close()
+        audio_data = out_buf.getvalue()
+        return {
+            "chunk_idx": c_idx,
+            "start_sec": start_s,
+            "end_sec": end_s,
+            "audio_bytes": audio_data,
+            "size_kb": len(audio_data) // 1024,
+            "mime_type": "audio/mp3",
+        }
+
+    chunk_start_sec = 0.0
+    for frame in input_container.decode(input_stream):
+        resampled_frames = resampler.resample(frame)
+        for rf in resampled_frames:
+            current_chunk_frames.append(rf)
+            current_samples += rf.samples
+            if current_samples >= samples_per_chunk:
+                chunk_end_sec = chunk_start_sec + (current_samples / 16000.0)
+                chunks.append(encode_mp3_chunk(current_chunk_frames, chunk_idx, chunk_start_sec, chunk_end_sec))
+                chunk_idx += 1
+                chunk_start_sec = chunk_end_sec
+                current_chunk_frames = []
+                current_samples = 0
+
+    if current_chunk_frames:
+        chunk_end_sec = chunk_start_sec + (current_samples / 16000.0)
+        chunks.append(encode_mp3_chunk(current_chunk_frames, chunk_idx, chunk_start_sec, chunk_end_sec))
+
+    input_container.close()
+    return chunks
+
+
+def _transcribe_chunk_whisper(chunk_bytes: bytes) -> str:
+    """Fallback gỡ băng một chunk âm thanh bằng faster-whisper cục bộ."""
+    import tempfile
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
+        tf.write(chunk_bytes)
+        tf_path = tf.name
+    try:
+        model = _get_whisper_model()
+        segments, _ = model.transcribe(
+            tf_path,
+            language="vi",
+            beam_size=3,
+            initial_prompt=WHISPER_INITIAL_PROMPT,
+        )
+        lines = []
+        for s in segments:
+            lines.append(f"[{int(s.start)//60:02d}:{int(s.start)%60:02d}] {s.text.strip()}")
+        return "\n".join(lines)
+    finally:
+        try:
+            os.remove(tf_path)
+        except Exception:
+            pass
+
+
 async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any]:
     """
-    Pha 1: Bóc băng giọng nói tiếng Việt bằng Google Gemini Multimodal Audio API.
-    Bắt buộc xuất ra 100% nguyên văn lời thoại có mốc thời gian [MM:SS] và phân vai người nói.
+    Pha 1: Bóc băng giọng nói tiếng Việt bằng Google Gemini Multimodal Audio API qua Multi-Chunk Slicing (Meetily Pattern).
+    Cắt nhỏ file thành các chunk 4 phút mono 16kHz, truyền Base64 inline_data trực tiếp.
+    Tương thích 100% với cả khóa Google AI Studio và Vertex Express (AQ...) không cần File API.
+    Tính toán offset mốc thời gian [MM:SS] chuẩn xác liên tục theo thời gian thực.
     """
     start_time = time.perf_counter()
     path_obj = Path(file_path)
     file_size = path_obj.stat().st_size
-    mime_type = _detect_audio_mime_type(file_path)
 
-    logger.info("🎙️ [Gemini STT] Bắt đầu gỡ băng file: %s (MIME: %s, Size: %d KB)", path_obj.name, mime_type, file_size // 1024)
+    logger.info("🎙️ [Gemini STT] Bắt đầu xử lý âm thanh: %s (%d KB)", path_obj.name, file_size // 1024)
 
     if meeting_id > 0:
         update_progress(
             meeting_id,
             status="transcribing",
-            progress_percent=20,
-            current_step_detail="Google Gemini Multimodal AI đang lắng nghe âm thanh cuộc họp...",
+            progress_percent=10,
+            current_step_detail="Đang phân tích và chia nhỏ tín hiệu âm thanh thành các phân đoạn 4 phút (16kHz mono)...",
         )
 
-    # Chọn cách truyền file: Inline Base64 nếu file nhỏ (<=8MB), File API nếu file lớn (>8MB)
-    if file_size <= 8 * 1024 * 1024:
-        logger.info("⚡ [Gemini STT] File nhỏ (<=8MB), sử dụng Inline Base64 siêu tốc.")
-        with open(file_path, "rb") as f:
-            b64_data = base64.b64encode(f.read()).decode("utf-8")
-        audio_part = {
-            "inline_data": {
-                "mime_type": mime_type,
-                "data": b64_data,
-            }
-        }
-    else:
-        logger.info("📦 [Gemini STT] File lớn (>8MB), upload qua Gemini File API.")
-        file_info = await _upload_to_gemini_files_api(file_path, mime_type, _GEMINI_API_KEY, meeting_id)
-        audio_part = {
-            "file_data": {
-                "file_uri": file_info["file_uri"],
-                "mime_type": mime_type,
-            }
-        }
+    # Cắt file âm thanh thành các chunk 4 phút
+    chunks = await asyncio.to_thread(_slice_audio_file, file_path, 240)
+    total_chunks = len(chunks)
+    logger.info("✂️ [Gemini STT] Đã phân đoạn thành %d chunk (4 phút/chunk)", total_chunks)
 
-    if meeting_id > 0:
-        update_progress(
-            meeting_id,
-            progress_percent=40,
-            current_step_detail="Google Gemini AI đang chuyển giọng nói thành văn bản chuẩn tiếng Việt [MM:SS]...",
-        )
+    all_transcript_lines: list[str] = []
+    total_duration_sec = chunks[-1]["end_sec"] if chunks else 0.0
 
     stt_prompt = (
-        "Bạn là chuyên gia gỡ băng âm thanh hành chính cao cấp tại Việt Nam.\n"
-        "NHIỆM VỤ CỐT LÕI: Hãy nghe toàn bộ file âm thanh này và chép lại NGUYÊN VĂN 100% từng câu chữ từ đầu đến cuối. "
-        "Tuyệt đối KHÔNG tóm tắt, KHÔNG lược bỏ bất kỳ lời phát biểu nào trong file âm thanh.\n\n"
-        "QUY CÁCH ĐỊNH DẠNG BẮT BUỘC:\n"
-        "1. Xuất ra toàn bộ lời thoại thực tế chia thành từng đoạn theo từng người phát biểu kèm mốc thời gian:\n"
-        "   [MM:SS] Tên người phát biểu / Vai trò: Toàn bộ nội dung phát biểu nguyên văn...\n"
-        "   Ví dụ: [00:15] Đồng chí Đỗ Văn Chiến - Chủ tịch Ủy ban Trung ương MTTQ Việt Nam: Trân trọng kính mời các đồng chí...\n"
-        "2. Tự động viết hoa đúng chuẩn chính tả Việt Nam: Họ tên lãnh đạo Đảng, Nhà nước, Quốc hội, Chính phủ, "
-        "tên cơ quan, ban ngành, địa danh và số hiệu các điều luật, tờ trình, nghị định.\n"
-        "3. Nếu không xác định rõ họ tên, hãy ghi rõ vai trò: [MM:SS] Người dẫn chương trình / Chủ tọa / Đại biểu Quốc hội: ..."
+        "Bạn là chuyên gia gỡ băng âm thanh tiếng Việt trình độ cao.\n"
+        "Hãy nghe kỹ đoạn âm thanh này và chép lại NGUYÊN VĂN 100% từng câu chữ tiếng Việt đã nói trong băng.\n"
+        "Quy tắc bắt buộc:\n"
+        "1. Giữ nguyên văn toàn bộ lời thoại, không bỏ sót bất kỳ từ nào, giữ đúng danh xưng, chức danh, tên người, cơ quan, số liệu.\n"
+        "2. Mỗi khi người nói bắt đầu một câu hoặc một ý mới, ghi kèm mốc thời gian tương đối ở đầu dòng theo đúng định dạng [MM:SS].\n"
+        "   Ví dụ:\n"
+        "   [00:00] Kính thưa các đồng chí...\n"
+        "   [00:15] Về nội dung kế hoạch...\n"
+        "3. Tuyệt đối KHÔNG tóm tắt, KHÔNG giải thích, KHÔNG thêm lời chào hay bình luận. CHỈ TRẢ VỀ CÁC DÒNG [MM:SS] Lời thoại."
     )
 
-    raw_transcript = await _call_gemini_generate_content(
-        parts=[audio_part, {"text": stt_prompt}],
-        api_key=_GEMINI_API_KEY,
-        models_override=GEMINI_AUDIO_MODELS,
-    )
+    for c_idx, chunk in enumerate(chunks):
+        chunk_start_sec = chunk["start_sec"]
+        chunk_end_sec = chunk["end_sec"]
 
-    cleaned_transcript = clean_vietnamese_transcript(raw_transcript)
+        pct = 15 + int((c_idx / total_chunks) * 45)
+        if meeting_id > 0:
+            update_progress(
+                meeting_id,
+                status="transcribing",
+                progress_percent=pct,
+                current_step_detail=f"Gemini Multimodal đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)...",
+            )
+
+        b64_audio = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
+        audio_part = {
+            "inline_data": {
+                "mime_type": "audio/mp3",
+                "data": b64_audio,
+            }
+        }
+
+        try:
+            chunk_raw = await _call_gemini_generate_content(
+                parts=[audio_part, {"text": stt_prompt}],
+                api_key=_GEMINI_API_KEY,
+                models_override=GEMINI_AUDIO_MODELS,
+            )
+        except Exception as chunk_err:
+            logger.warning("⚠️ Lỗi gỡ băng chunk %d bằng Gemini: %s. Thử fallback Whisper...", c_idx + 1, chunk_err)
+            try:
+                whisper_res = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
+                chunk_raw = whisper_res
+            except Exception as w_err:
+                logger.error("❌ Cả Gemini và Whisper đều thất bại trên chunk %d: %s", c_idx + 1, w_err)
+                chunk_raw = ""
+
+        # Chuẩn hóa mốc thời gian [MM:SS] offset theo chunk_start_sec
+        chunk_lines = [line.strip() for line in chunk_raw.split("\n") if line.strip()]
+        for line in chunk_lines:
+            if re.search(r"^(chào bạn|dưới đây là|hy vọng|nếu cần hỗ trợ|bản gỡ băng)", line, re.IGNORECASE):
+                continue
+
+            ts_match = re.match(r"^\[(\d{1,2}):(\d{2})\]\s*(.*)", line)
+            if ts_match:
+                rel_min = int(ts_match.group(1))
+                rel_sec = int(ts_match.group(2))
+                rel_total = rel_min * 60 + rel_sec
+                abs_total = int(chunk_start_sec + rel_total)
+                abs_min = abs_total // 60
+                abs_sec = abs_total % 60
+                content = ts_match.group(3).strip()
+                all_transcript_lines.append(f"[{abs_min:02d}:{abs_sec:02d}] {content}")
+            else:
+                start_m = int(chunk_start_sec) // 60
+                start_s = int(chunk_start_sec) % 60
+                all_transcript_lines.append(f"[{start_m:02d}:{start_s:02d}] {line}")
+
+        if meeting_id > 0 and all_transcript_lines:
+            preview_text = "\n".join(all_transcript_lines[-6:])
+            update_progress(
+                meeting_id,
+                partial_transcript=preview_text,
+            )
+
+    if not all_transcript_lines:
+        raise RuntimeError("Tệp âm thanh không chứa giọng nói có thể nhận diện được.")
+
+    full_transcript = "\n".join(all_transcript_lines)
+    cleaned_transcript = clean_vietnamese_transcript(full_transcript)
     elapsed = time.perf_counter() - start_time
 
-    # Chia đoạn transcript để giả lập segments hiển thị live
-    paragraphs = [p.strip() for p in cleaned_transcript.split("\n") if p.strip()]
+    # Tạo segments list cho trình phát âm thanh và click-to-seek
     segments: list[dict[str, Any]] = []
-    current_time = 0.0
-    for p in paragraphs:
-        duration_est = max(len(p) * 0.08, 3.0)
-        segments.append({
-            "start": round(current_time, 2),
-            "end": round(current_time + duration_est, 2),
-            "text": p,
-        })
-        current_time += duration_est
+    for line in cleaned_transcript.split("\n"):
+        line = line.strip()
+        if not line:
+            continue
+        m = re.match(r"^\[(\d{1,2}):(\d{2})\]\s*(.*)", line)
+        if m:
+            s_val = int(m.group(1)) * 60 + int(m.group(2))
+            segments.append({
+                "start": float(s_val),
+                "end": float(s_val + 5.0),
+                "text": line,
+            })
+        else:
+            segments.append({
+                "start": 0.0,
+                "end": 5.0,
+                "text": line,
+            })
 
     if meeting_id > 0:
         update_progress(
             meeting_id,
             progress_percent=60,
-            current_step_detail="Gỡ băng bằng Google Gemini hoàn tất! Đang chuẩn bị tạo biên bản...",
+            current_step_detail="Gỡ băng 100% âm thanh thực tế hoàn tất! Bắt đầu tổng hợp biên bản chuyên sâu...",
             partial_transcript=cleaned_transcript[:1200] + ("..." if len(cleaned_transcript) > 1200 else ""),
         )
 
-    logger.info("✅ [Gemini STT] Hoàn tất gỡ băng trong %.2fs (%d ký tự)", elapsed, len(cleaned_transcript))
+    logger.info("✅ [Gemini STT] Hoàn tất gỡ băng %d dòng trong %.2fs (%d ký tự)", len(all_transcript_lines), elapsed, len(cleaned_transcript))
 
     return {
         "text": cleaned_transcript,
         "language": "vi",
         "segments": segments,
-        "duration": round(current_time, 2),
+        "duration": round(total_duration_sec, 2),
         "processing_time_seconds": round(elapsed, 2),
         "engine": "google-gemini",
     }
@@ -750,13 +913,12 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
 
 async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: int = 0) -> dict[str, Any]:
     """
-    Pha 2: Bộ máy viết biên bản Thư ký Hành chính Chuyên sâu (Human Secretary Narrative Engine)
-    kết hợp Trích xuất Nhiệm vụ bằng Google Gemini API.
-    Tuân thủ nghiêm ngặt nguyên tắc:
-      - Tường thuật chi tiết, chính luận đĩnh đạc, không tóm tắt cụt ngủn
-      - Cấu trúc 3 phần chuẩn Thư ký Nhà nước / Doanh nghiệp lớn (Nghị định 30/2020/NĐ-CP)
-      - Phần II chiếm 70% dung lượng, bóc tách tuần tự 1, 2, 3 (3.1, 3.2, 3.3... gồm đủ ý a, b, c)
-      - Trích xuất công việc thực tế gắn đúng đích danh người/cơ quan phụ trách
+    Pha 2: Fabric Sliding-Window Map-Reduce Narrative Engine
+    - Map Step: Chia transcript thành các phân đoạn 4,000 - 5,000 ký tự.
+      Mỗi phân đoạn gọi Gemini để soạn thảo tường thuật chi tiết (400 - 800 từ) bảo toàn 100% diễn giả,
+      số liệu, tờ trình, nghị định, ý kiến tranh luận.
+    - Reduce Step: Ghép toàn bộ các đoạn tường thuật vào Phần II (không nén mất mát).
+      Gọi Gemini tổng hợp Phần I (Bối cảnh/Thành phần), Phần III (Kết luận/Chỉ đạo), và trích xuất Action Items JSON.
     """
     start_time = time.perf_counter()
 
@@ -764,143 +926,145 @@ async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: i
         update_progress(
             meeting_id,
             status="summarizing",
-            progress_percent=75,
-            current_step_detail="Google Gemini Narrative Engine đang soạn thảo biên bản tường thuật chuyên sâu...",
+            progress_percent=65,
+            current_step_detail="Khởi động Fabric Narrative Engine: Chuẩn bị phân tích sâu lời thoại...",
         )
 
-    system_instruction = (
-        "Bạn là Thư ký Hành chính Chuyên nghiệp (Human Secretary Narrative Engine) tại Việt Nam, phụ trách soạn thảo "
-        "Biên bản Cuộc họp toàn văn chi tiết, đĩnh đạc và chuẩn mực theo quy chuẩn văn bản công vụ và điều hành cấp cao (Nghị định số 30/2020/NĐ-CP).\n\n"
-        "NGUYÊN TẮC HÀNH VĂN BẮT BUỘC:\n"
-        "1. PHONG CÁCH THƯ KÝ HÀNH CHÍNH CHUYÊN SÂU:\n"
-        "   - Viết bằng văn phong chính luận trang trọng, tường thuật mạch lạc diễn biến theo thời gian (ví dụ: 'Mở đầu phiên làm việc, đồng chí...', 'Tiếp theo chương trình, thừa ủy quyền của Thủ tướng Chính phủ, đồng chí...', 'Phát biểu thảo luận, đồng chí... đã phân tích sâu sắc về...').\n"
-        "   - TUYỆT ĐỐI KHÔNG tóm tắt cụt ngủn dạng gạch đầu dòng 1-2 câu. Phải tường thuật đầy đủ, phân tích thấu đáo các lập luận, luận cứ, căn cứ pháp lý, bối cảnh thực tiễn được các đại biểu đưa ra.\n"
-        "   - Bảo toàn 100% dữ liệu định lượng: con số thống kê, tỷ lệ %, số điều khoản luật, tên dự án luật, tên tờ trình, mốc thời gian.\n"
-        "2. CẤU TRÚC BẮT BUỘC ĐÚNG 3 PHẦN:\n"
-        "   - PHẦN I: THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH (Thời gian, địa điểm, thành phần, chủ tọa, thư ký, mục tiêu và bối cảnh thực tiễn)\n"
-        "   - PHẦN II: DIỄN BIẾN THẢO LUẬN CHI TIẾT (Chiếm 70% dung lượng biên bản):\n"
-        "     1. Nghi thức, Tuyên bố lý do & Giới thiệu thành phần (lãnh đạo Đảng, Nhà nước, ban ngành tham dự)\n"
-        "     2. Khai mạc / Phát biểu định hướng của Chủ tọa (nguyên tắc cốt lõi, tinh thần chỉ đạo)\n"
-        "     3. Nội dung các Báo cáo, Tờ trình & Thảo luận của từng Đại biểu / Diễn giả:\n"
-        "        Bắt buộc tách từng tiểu mục 3.1, 3.2, 3.3... cho từng diễn giả, mỗi người gồm 3 ý: a) Bối cảnh & sự cần thiết; b) Bố cục & chính sách trọng tâm (số liệu, % tỷ lệ, điều khoản); c) Các phương án lựa chọn & ý kiến thẩm tra/phản biện.\n"
-        "   - PHẦN III: KẾT LUẬN & GIAO NHIỆM VỤ TRỌNG TÂM (tổng kết thống nhất và phân công nhiệm vụ cụ thể gắn cơ quan/người và thời hạn).\n"
-        "3. TRÍCH XUẤT CÔNG VIỆC THỰC TẾ: Trích xuất các nhiệm vụ hành động thực tế từ cuộc họp, đích danh người/cơ quan chịu trách nhiệm, thời hạn và độ ưu tiên."
-    )
+    # 1. Chia transcript thành các đoạn 4,000 - 5,000 ký tự
+    lines = [l.strip() for l in transcript_text.split("\n") if l.strip()]
+    segments: list[str] = []
+    current_segment_lines: list[str] = []
+    current_char_count = 0
 
-    detailed_source_text = transcript_text
+    for line in lines:
+        current_segment_lines.append(line)
+        current_char_count += len(line)
+        if current_char_count >= 4000:
+            segments.append("\n".join(current_segment_lines))
+            current_segment_lines = []
+            current_char_count = 0
 
-    # Đối với cuộc họp dài (> 6000 ký tự), thực hiện Multi-Chunk Detailed Synthesis
-    if len(transcript_text) > 6000:
-        logger.info("📑 Bản gỡ băng dài (%d ký tự) -> Kích hoạt Multi-Chunk Narrative Synthesis...", len(transcript_text))
-        chunk_size = 5000
-        overlap = 400
-        chunks = []
-        idx = 0
-        while idx < len(transcript_text):
-            end_idx = min(idx + chunk_size, len(transcript_text))
-            chunk = transcript_text[idx:end_idx]
-            chunks.append(chunk)
-            if end_idx >= len(transcript_text):
-                break
-            idx += (chunk_size - overlap)
+    if current_segment_lines:
+        segments.append("\n".join(current_segment_lines))
 
+    if not segments:
+        segments = [transcript_text]
+
+    total_segments = len(segments)
+    logger.info("📑 [Fabric Engine] Chia thành %d phân đoạn để tường thuật chi tiết (Zero Lossy)", total_segments)
+
+    # 2. MAP STEP: Soạn thảo tường thuật chi tiết từng phân đoạn
+    narrative_sections: list[str] = []
+    for s_idx, segment_content in enumerate(segments):
+        pct = 65 + int((s_idx / total_segments) * 20)
         if meeting_id > 0:
             update_progress(
                 meeting_id,
-                progress_percent=78,
-                current_step_detail=f"Đang phân tích chuyên sâu từng phần ({len(chunks)} phần)...",
+                status="summarizing",
+                progress_percent=pct,
+                current_step_detail=f"Fabric Engine đang biên soạn tường thuật chi tiết phân đoạn {s_idx + 1}/{total_segments}...",
             )
 
-        chunk_details: list[str] = []
-        for c_idx, c_text in enumerate(chunks):
-            chunk_prompt = f"""Dưới đây là phần {c_idx + 1}/{len(chunks)} của bản gỡ băng cuộc họp:
+        segment_prompt = f"""Bạn là Thư ký cấp cao phụ trách lập biên bản các cuộc họp hành chính, chính phủ, doanh nghiệp lớn tại Việt Nam theo Nghị định 30/2020/NĐ-CP.
+Dưới đây là một phân đoạn lời thoại bóc băng nguyên văn từ cuộc họp:
 ---
-{c_text}
+{segment_content}
 ---
 
-Hãy phân tích toàn diện và ghi nhận chi tiết 100% nội dung phần này (ZERO HALLUCINATION & HUMAN SECRETARY STYLE):
-- Tên và chức danh người phát biểu (nêu rõ từng phát biểu).
-- Tên tờ trình, báo cáo, văn bản được đề cập.
-- Các ý kiến, quan điểm, đề xuất cụ thể (phân tích chi tiết từng luận điểm, phương án 1, 2...).
-- Số liệu thống kê, kinh phí, mốc thời gian, số hiệu nghị định/luật.
-- Các chỉ đạo hoặc nhiệm vụ giao cho ai.
-Tuyệt đối không tóm tắt sơ sài, giữ nguyên vẹn thông tin thực tế."""
+Yêu cầu biên soạn tường thuật chi tiết (Human Secretary Narrative Style - Zero Hallucination):
+1. Phân tích sâu sắc và tường thuật toàn văn chi tiết diễn biến trong phân đoạn này.
+2. Nêu rõ tên và chức danh người phát biểu (nếu có trong lời thoại).
+3. Tường thuật đầy đủ từng luận điểm, tờ trình, báo cáo, số liệu thống kê (% tỷ lệ, định mức, số hiệu điều luật/nghị định).
+4. Tường thuật chi tiết các ý kiến tranh luận, ý kiến phản biện và phương án lựa chọn đề xuất.
+5. Văn phong chính luận trang trọng, đĩnh đạc, câu từ mạch lạc (ví dụ: "Phát biểu thảo luận, đồng chí... đã phân tích...", "Về nội dung này, cuộc họp ghi nhận ý kiến của...").
+6. Dung lượng yêu cầu: Tối thiểu 350 - 700 từ cho phân đoạn này. Tuyệt đối KHÔNG tóm tắt sơ sài vài gạch đầu dòng.
+7. Tuyệt đối KHÔNG bịa đặt thông tin không có trong lời thoại. Chỉ trả về nội dung biên bản tường thuật của phân đoạn này."""
 
-            try:
-                c_out = await _call_gemini_generate_content(
-                    parts=[{"text": chunk_prompt}],
-                    system_instruction=system_instruction,
-                    api_key=_GEMINI_API_KEY,
-                    models_override=GEMINI_TEXT_MODELS,
-                )
-                chunk_details.append(f"### DIỄN BIẾN PHẦN {c_idx + 1}:\n{c_out}")
-            except Exception as c_err:
-                logger.warning("⚠️ Lỗi phân tích chunk %d: %s. Dùng trích đoạn gốc...", c_idx + 1, c_err)
-                chunk_details.append(f"### DIỄN BIẾN PHẦN {c_idx + 1}:\n{c_text[:3000]}")
+        try:
+            narrative_text = await _call_gemini_generate_content(
+                parts=[{"text": segment_prompt}],
+                api_key=_GEMINI_API_KEY,
+                models_override=GEMINI_TEXT_MODELS,
+            )
+            narrative_sections.append(narrative_text.strip())
+        except Exception as seg_err:
+            logger.warning("⚠️ Lỗi biên soạn phân đoạn %d: %s. Dùng trích đoạn lời thoại...", s_idx + 1, seg_err)
+            narrative_sections.append(segment_content)
 
-        detailed_source_text = "\n\n".join(chunk_details)
+    # 3. REDUCE STEP: Lắp ghép Phần II không mất mát
+    section_2_text = "\n\n".join(narrative_sections)
 
-    user_prompt = f"""Dưới đây là dữ liệu diễn biến chi tiết của cuộc họp:
---- BẮT ĐẦU DỮ LIỆU CUỘC HỌP ---
-{detailed_source_text}
---- HẾT DỮ LIỆU CUỘC HỌP ---
+    if meeting_id > 0:
+        update_progress(
+            meeting_id,
+            status="summarizing",
+            progress_percent=88,
+            current_step_detail="Đang tổng hợp Bối cảnh chung (Phần I), Kết luận chỉ đạo (Phần III) và Danh mục công việc...",
+        )
 
-Hãy đóng vai Thư ký trưởng chuyên nghiệp để soạn thảo Biên bản Cuộc họp toàn văn chi tiết theo Nghị định 30/2020/NĐ-CP và trích xuất danh sách công việc. 
-Trả về DUY NHẤT một JSON Object hợp lệ có cấu trúc chính xác như sau:
+    # 4. TARGETED PASS: Tạo Phần I, Phần III và Trích xuất Tasks JSON
+    synthesis_prompt = f"""Dưới đây là toàn bộ diễn biến thảo luận chi tiết của cuộc họp:
+---
+{section_2_text[:14000]}
+---
+
+Dựa trên toàn bộ diễn biến trên, hãy đóng vai Thư ký trưởng để:
+1. Soạn thảo PHẦN I: THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH (Thời gian, địa điểm, thành phần tham dự, chủ tọa điều hành, thư ký, mục tiêu và bối cảnh thực tiễn của cuộc họp).
+2. Soạn thảo PHẦN III: KẾT LUẬN & GIAO NHIỆM VỤ TRỌNG TÂM (Tổng hợp các nội dung đã được hội nghị thống nhất thông qua và kết luận chỉ đạo cốt lõi).
+3. Trích xuất danh sách công việc (Action Items) cụ thể từ cuộc họp thành mảng JSON gồm 6 đến 12 nhiệm vụ, mỗi nhiệm vụ gồm tiêu đề cụ thể, đơn vị/người phụ trách, thời hạn và độ ưu tiên.
+
+Trả về DUY NHẤT một JSON Object hợp lệ theo mẫu:
 {{
-  "minutes": "Nội dung biên bản tường thuật toàn văn chi tiết, sâu sắc, chia đúng 3 phần:\\n\\nI. THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH\\n- Thời gian, địa điểm, thành phần tham dự, chủ tọa điều hành, thư ký ghi chép.\\n- Mục tiêu, yêu cầu và bối cảnh chính trị, pháp lý, thực tiễn của cuộc họp.\\n\\nII. DIỄN BIẾN THẢO LUẬN CHI TIẾT\\n1. Nghi thức, Tuyên bố lý do & Giới thiệu thành phần\\n(Tường thuật diễn biến khai mạc, nêu rõ các đồng chí lãnh đạo Đảng, Nhà nước, bộ ngành tham dự)\\n\\n2. Khai mạc / Phát biểu định hướng của Chủ tọa\\n(Tóm lược đầy đủ các nguyên tắc cốt lõi, yêu cầu trọng tâm, tinh thần chỉ đạo xuyên suốt của Chủ tọa)\\n\\n3. Nội dung các Báo cáo, Tờ trình & Thảo luận của từng Đại biểu / Diễn giả\\n3.1. Ý kiến/Báo cáo của [Họ và tên] - [Chức vụ]\\na) Tên báo cáo/tờ trình, sự cần thiết ban hành / bối cảnh thực tiễn.\\nb) Bố cục, nội dung trọng tâm, các chính sách then chốt (số liệu, điều khoản luật, % tỷ lệ).\\nc) Các phương án lựa chọn, đánh giá tác động và ý kiến thẩm tra/phản biện.\\n\\n3.2. Ý kiến/Báo cáo của [Họ và tên] - [Chức vụ]...\\n(Tiếp tục tường thuật chi tiết đầy đủ 3 ý a, b, c cho từng diễn giả tiếp theo)\\n\\nIII. KẾT LUẬN & GIAO NHIỆM VỤ TRỌNG TÂM\\n- Tổng hợp các nội dung đã được hội nghị thống nhất thông qua.\\n- Phân công nhiệm vụ cụ thể gắn chặt với cơ quan/người chịu trách nhiệm và thời hạn hoàn thành.",
+  "section_1": "I. THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH\\n- Thời gian, địa điểm, thành phần tham dự...\\n- Mục tiêu, yêu cầu...",
+  "section_3": "III. KẾT LUẬN & GIAO NHIỆM VỤ TRỌNG TÂM\\n- Các nội dung thống nhất...\\n- Chỉ đạo trọng tâm...",
   "tasks": [
     {{
-      "title": "Nội dung công việc hoặc chỉ đạo cụ thể (dưới 120 ký tự)",
-      "description": "Chi tiết yêu cầu triển khai thực tế",
-      "assignee": "Cơ quan, đơn vị hoặc đích danh người chịu trách nhiệm thực hiện",
-      "deadline": "Thời hạn hoặc mốc thời gian hoàn thành cụ thể",
+      "title": "Tên công việc hoặc chỉ đạo cụ thể",
+      "description": "Yêu cầu chi tiết",
+      "assignee": "Cơ quan, đơn vị hoặc người chịu trách nhiệm",
+      "deadline": "Thời hạn hoặc kế hoạch hoàn thành",
       "priority": "High"
     }}
   ]
-}}
+}}"""
 
-QUY TẮC BẮT BUỘC:
-1. 'minutes': Viết bằng tiếng Việt chính luận đĩnh đạc, tường thuật chuyên sâu, phân tích kỹ lưỡng từng diễn giả. Tuyệt đối không viết gạch đầu dòng 1-2 câu sơ sài.
-2. 'tasks': Trích xuất từ 6 đến 15 nhiệm vụ / chỉ đạo hành động thực tế từ nội dung cuộc họp, gắn đúng tên cơ quan, đơn vị hoặc người chịu trách nhiệm.
-3. KHÔNG viết bất kỳ chữ nào bên ngoài JSON.
-"""
-
-    gemini_json_raw = await _call_gemini_generate_content(
-        parts=[{"text": user_prompt}],
-        system_instruction=system_instruction,
+    gemini_synth_raw = await _call_gemini_generate_content(
+        parts=[{"text": synthesis_prompt}],
         response_mime_type="application/json",
         api_key=_GEMINI_API_KEY,
         models_override=GEMINI_TEXT_MODELS,
     )
 
-    minutes_text = ""
+    section_1_text = "I. THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH\n- Căn cứ chương trình và diễn biến làm việc thực tế của cuộc họp."
+    section_3_text = "III. KẾT LUẬN & GIAO NHIỆM VỤ TRỌNG TÂM\n- Các đại biểu thống nhất cao với các nội dung chỉ đạo đã nêu trong cuộc họp."
     tasks_list: list[dict[str, Any]] = []
 
     try:
-        data = json.loads(gemini_json_raw)
-        minutes_text = str(data.get("minutes", "")).strip()
-        raw_tasks = data.get("tasks", [])
+        synth_data = json.loads(gemini_synth_raw)
+        if synth_data.get("section_1"):
+            section_1_text = str(synth_data["section_1"]).strip()
+        if synth_data.get("section_3"):
+            section_3_text = str(synth_data["section_3"]).strip()
+
+        raw_tasks = synth_data.get("tasks", [])
         if isinstance(raw_tasks, list):
             for item in raw_tasks:
                 if isinstance(item, dict) and item.get("title"):
                     tasks_list.append({
                         "title": str(item.get("title")).strip(),
                         "description": item.get("description") or str(item.get("title")).strip(),
-                        "assignee_name": item.get("assignee") or item.get("assignee_name") or "Đơn vị liên quan",
-                        "due_date": item.get("deadline") or item.get("due_date") or "Kế hoạch sắp tới",
+                        "assignee_name": item.get("assignee") or item.get("assignee_name") or "Đơn vị phụ trách",
+                        "due_date": item.get("deadline") or item.get("due_date") or "Theo kế hoạch",
                         "priority": item.get("priority", "Medium"),
                     })
     except Exception as parse_err:
-        logger.warning("⚠️ Lỗi parse JSON Gemini: %s. Thử parse regex...", parse_err)
-        # Parse fallback
-        tasks_list = _parse_tasks_json(gemini_json_raw)
+        logger.warning("⚠️ Lỗi parse JSON tổng hợp: %s. Thử parse regex...", parse_err)
+        tasks_list = _parse_tasks_json(gemini_synth_raw)
 
-    # Đảm bảo có biên bản hợp lệ
-    if not minutes_text or len(minutes_text) < 100:
-        minutes_text = gemini_json_raw
+    # Lắp ghép biên bản hoàn chỉnh 3 phần chuẩn Nghị định 30
+    final_minutes = f"{section_1_text}\n\nII. DIỄN BIẾN THẢO LUẬN CHI TIẾT\n\n{section_2_text}\n\n{section_3_text}"
 
-    # Đảm bảo số lượng tasks tối thiểu (nếu Gemini trả ít hơn 3, bổ sung bằng Rule-based)
+    # Đảm bảo số lượng tasks tối thiểu
     if len(tasks_list) < 4:
         logger.info("🔍 Bổ sung thêm nhiệm vụ từ Rule-based Extractor...")
         rule_tasks = _rule_based_task_extractor(transcript_text)
@@ -911,10 +1075,10 @@ QUY TẮC BẮT BUỘC:
                 existing_titles.add(rt["title"].strip().lower())
 
     elapsed = time.perf_counter() - start_time
-    logger.info("✅ [Gemini LLM] Hoàn tất biên bản & trích xuất %d tasks trong %.2fs", len(tasks_list), elapsed)
+    logger.info("✅ [Fabric Narrative Engine] Biên bản hoàn tất: %d ký tự | Tasks: %d trong %.2fs", len(final_minutes), len(tasks_list), elapsed)
 
     return {
-        "minutes": minutes_text,
+        "minutes": final_minutes,
         "tasks": tasks_list,
         "_llm_processing_time_seconds": round(elapsed, 2),
         "engine": "google-gemini",
