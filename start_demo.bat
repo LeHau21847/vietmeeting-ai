@@ -32,7 +32,7 @@ start "VietMeeting_Server_8000" cmd /k "cd /d e:\PTUD && e:\PTUD\venv\Scripts\py
 :: 5. Vong lap Healthcheck: Cho Server san sang 100% truoc khi lam buoc tiep theo
 echo [*] Dang cho Server khoi dong hoan tat va san sang (Healthcheck)...
 :HEALTH_LOOP
-e:\PTUD\venv\Scripts\python.exe -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/ai-config', timeout=1)" >nul 2>&1
+e:\PTUD\venv\Scripts\python.exe -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=2)" >nul 2>&1
 if "%ERRORLEVEL%"=="0" goto SERVER_READY
 timeout /t 1 /nobreak >nul
 goto HEALTH_LOOP
@@ -74,7 +74,7 @@ echo ===========================================================================
 echo                VIETMEETING AI - HE THONG TRUY CAP HOAN TAT
 echo ===============================================================================
 echo.
-echo   [1] LOCAL WEB  : http://localhost:8000
+echo   [1] LOCAL WEB  : http://127.0.0.1:8000 (hoac http://localhost:8000)
 echo   [2] WIFI / LAN : http://%LAN_IP%:8000
 echo   [3] PUBLIC URL : %PUBLIC_URL%
 echo.
@@ -85,9 +85,9 @@ echo   * Link Public [3] cho phep truy cap tu dien thoai hoac may tinh khac qua 
 echo ===============================================================================
 echo.
 
-:: 11. Tu dong mo trinh duyet mac dinh tai http://localhost:8000
-echo [*] Dang mo trinh duyet Web tai http://localhost:8000 ...
-start "" "http://localhost:8000"
+:: 11. Tu dong mo trinh duyet mac dinh tai http://127.0.0.1:8000
+echo [*] Dang mo trinh duyet Web tai http://127.0.0.1:8000 ...
+start "" "http://127.0.0.1:8000"
 
 echo.
 echo [!] He thong dang chay on dinh. Nhan phim bat ky neu muon dong cua so dieu khien nay.

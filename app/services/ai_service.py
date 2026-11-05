@@ -253,7 +253,7 @@ def get_ai_config() -> dict[str, Any]:
         "gemini_api_key_masked": masked_key,
         "preferred_engine": _PREFERRED_AI_ENGINE,
         "active_engine": active_engine,
-        "active_model": _get_available_gemini_model() if active_engine == "gemini" else "whisper-small + qwen2.5:1.5b",
+        "active_model": _discovered_gemini_models[0] if _discovered_gemini_models else ("gemini-2.5-flash" if active_engine == "gemini" else "whisper-small + qwen2.5:1.5b"),
         "supported_models": GEMINI_MODELS,
     }
 

@@ -30,24 +30,29 @@ function resolveBackendBaseUrl(): string {
   if (Platform.OS === "web") {
     try {
       if (typeof window !== "undefined" && window.location) {
-        const { protocol, hostname, port, origin } = window.location;
-        // 1. Nếu đang truy cập qua cổng 8000 hoặc qua HTTPS / Public domain (không phải Expo dev port 8081/19006/8082)
+        const { protocol, hostname, origin } = window.location;
+
+        // 1. Nếu là HTTPS hoặc tên miền công khai Internet (Render, Cloudflare Tunnel, ngrok, localtunnel)
         if (
-          port === "8000" ||
           protocol === "https:" ||
-          (port !== "8081" && port !== "19006" && port !== "8082")
+          (hostname &&
+            hostname.includes(".") &&
+            !hostname.startsWith("192.168.") &&
+            !hostname.startsWith("10.") &&
+            !hostname.startsWith("172.") &&
+            !hostname.startsWith("127."))
         ) {
-          if (origin && !origin.includes(":8081") && !origin.includes(":19006")) {
-            return origin;
-          }
+          return origin;
         }
-        // 2. Nếu đang chạy trên Expo Dev Server (port 8081)
-        // Ép dùng 127.0.0.1 khi hostname là localhost để tránh Windows IPv6 (::1) connection refused
-        const host =
-          hostname === "localhost" || hostname === "127.0.0.1" || !hostname
-            ? "127.0.0.1"
-            : hostname;
-        return `http://${host}:${BACKEND_PORT}`;
+
+        // 2. Nếu đang chạy cục bộ trên máy tính (localhost hoặc 127.0.0.1):
+        // Bắt buộc gọi IPv4 127.0.0.1:8000 để tránh Windows IPv6 (::1) Connection Refused
+        if (!hostname || hostname === "localhost" || hostname === "127.0.0.1") {
+          return `http://127.0.0.1:${BACKEND_PORT}`;
+        }
+
+        // 3. Nếu truy cập qua IP mạng LAN (ví dụ 192.168.1.x)
+        return `http://${hostname}:${BACKEND_PORT}`;
       }
     } catch {
       // Fallback nếu window chưa sẵn sàng
