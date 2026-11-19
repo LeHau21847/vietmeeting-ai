@@ -189,28 +189,35 @@ export default function RecordingScreen(): React.JSX.Element {
 
         let currentEngine: "gemini" | "local" = "gemini";
 
-        if (progRes.status === "fulfilled" && progRes.value.data) {
-          const pData = progRes.value.data;
-          setProgressData(pData);
-          if (pData.engine_used === "local") {
+        const applyDynamicEngine = (reportedEngine?: "gemini" | "local" | null) => {
+          if (reportedEngine === "local") {
             currentEngine = "local";
             setEngineUsed((prev) => {
               if (prev !== "local") {
                 showToast({
                   title: "Mất kết nối Internet - Chuyển sang Local AI",
-                  description: "Hệ thống tự động định tuyến sang Faster-Whisper & Ollama nội bộ.",
+                  description: "Hệ thống tự động chuyển nóng sang Faster-Whisper & Ollama nội bộ ngay giữa tiến trình.",
                   type: "offline",
                 });
               }
               return "local";
             });
-          } else if (pData.engine_used === "gemini") {
+          } else if (reportedEngine === "gemini") {
             setEngineUsed("gemini");
           }
+        };
+
+        if (progRes.status === "fulfilled" && progRes.value.data) {
+          const pData = progRes.value.data;
+          setProgressData(pData);
+          applyDynamicEngine(pData.current_engine ?? pData.engine_used);
         }
 
         if (meetingRes.status === "fulfilled" && meetingRes.value.data) {
           const meeting = meetingRes.value.data;
+          if (meeting.current_engine) {
+            applyDynamicEngine(meeting.current_engine);
+          }
           if (meeting.status === "completed") {
             stopProgressPolling();
             const finalResult: AIProcessingResult = {

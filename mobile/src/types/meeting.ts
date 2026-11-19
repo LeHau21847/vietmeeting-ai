@@ -60,6 +60,7 @@ export interface MeetingRead {
   created_at: string;
   updated_at: string;
   tasks: TaskSummary[];
+  current_engine?: "gemini" | "local" | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -147,6 +148,7 @@ export interface ProgressData {
   progress_percent: number;
   current_step_detail: string;
   partial_transcript: string;
+  current_engine?: "gemini" | "local";
   engine_used?: "gemini" | "local";
 }
 

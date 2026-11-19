@@ -140,6 +140,8 @@ class MeetingRead(OrmBase):
 
     # Danh sách task con (rút gọn, không đệ quy)
     tasks: list["TaskSummary"] = Field(default_factory=list)
+    # Engine AI hiện tại đang xử lý cuộc họp ('gemini' | 'local') lấy từ PROGRESS_STORE
+    current_engine: str | None = None
 
 
 class MeetingSummary(OrmBase):

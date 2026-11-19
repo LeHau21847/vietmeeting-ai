@@ -467,12 +467,18 @@ PROGRESS_STORE: dict[int, dict[str, Any]] = {}
 
 def init_progress(meeting_id: int) -> None:
     """Khởi tạo progress tracking cho một meeting."""
+    initial_engine = (
+        "gemini"
+        if (_PREFERRED_AI_ENGINE != "local" and is_valid_gemini_key(_GEMINI_API_KEY) and check_internet_available(timeout_sec=1.5))
+        else "local"
+    )
     PROGRESS_STORE[meeting_id] = {
         "status": "uploading",
         "progress_percent": 0,
         "current_step_detail": "Đang chuẩn bị xử lý file audio...",
         "partial_transcript": "",
-        "engine_used": "gemini" if (_PREFERRED_AI_ENGINE != "local" and is_valid_gemini_key(_GEMINI_API_KEY)) else "local",
+        "current_engine": initial_engine,
+        "engine_used": initial_engine,
     }
 
 
@@ -484,8 +490,9 @@ def update_progress(
     current_step_detail: str | None = None,
     partial_transcript: str | None = None,
     engine_used: str | None = None,
+    current_engine: str | None = None,
 ) -> None:
-    """Cập nhật tiến trình cho một meeting."""
+    """Cập nhật tiến trình cho một meeting (đồng bộ current_engine & engine_used)."""
     if meeting_id not in PROGRESS_STORE:
         init_progress(meeting_id)
     store = PROGRESS_STORE[meeting_id]
@@ -497,8 +504,10 @@ def update_progress(
         store["current_step_detail"] = current_step_detail
     if partial_transcript is not None:
         store["partial_transcript"] = partial_transcript
-    if engine_used is not None:
-        store["engine_used"] = engine_used
+    resolved_engine = current_engine or engine_used
+    if resolved_engine is not None:
+        store["current_engine"] = resolved_engine
+        store["engine_used"] = resolved_engine
 
 
 def get_progress(meeting_id: int) -> dict[str, Any]:
@@ -508,6 +517,7 @@ def get_progress(meeting_id: int) -> dict[str, Any]:
         "progress_percent": 0,
         "current_step_detail": "Không có dữ liệu tiến trình.",
         "partial_transcript": "",
+        "current_engine": "gemini",
         "engine_used": "gemini",
     })
 
@@ -727,8 +737,8 @@ async def _call_gemini_generate_content(
         discovered = await _get_available_gemini_models_async(key)
         model_list = discovered if discovered else list(GEMINI_PRIORITY_MODELS)
 
-    # Connect timeout 2.5s để phát hiện rớt mạng tức thì (không treo 60s)
-    fast_timeout = httpx.Timeout(300.0, connect=2.5)
+    # Connect timeout 2.5s & read/write timeout 90s/20s để phát hiện rớt mạng giữa chừng tức thì
+    fast_timeout = httpx.Timeout(90.0, connect=2.5, write=20.0)
     async with httpx.AsyncClient(timeout=fast_timeout) as client:
         last_error = None
         for model in model_list:
@@ -883,23 +893,49 @@ def _slice_audio_file(file_path: str, chunk_duration_sec: int = 240) -> list[dic
 
 
 def _transcribe_chunk_whisper(chunk_bytes: bytes) -> str:
-    """Fallback gỡ băng một chunk âm thanh bằng faster-whisper cục bộ."""
+    """Fallback gỡ băng một chunk âm thanh bằng faster-whisper cục bộ (hỗ trợ hạ cấp GPU -> CPU an toàn)."""
+    global _whisper_model_instance
     import tempfile
+
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tf:
         tf.write(chunk_bytes)
         tf_path = tf.name
     try:
-        model = _get_whisper_model()
-        segments, _ = model.transcribe(
-            tf_path,
-            language="vi",
-            beam_size=3,
-            initial_prompt=WHISPER_INITIAL_PROMPT,
-        )
-        lines = []
-        for s in segments:
-            lines.append(f"[{int(s.start)//60:02d}:{int(s.start)%60:02d}] {s.text.strip()}")
-        return "\n".join(lines)
+        for attempt in (1, 2):
+            try:
+                if attempt == 1:
+                    model = _get_whisper_model(force_cpu=False)
+                    beam_size = 3
+                    use_vad = True
+                else:
+                    logger.warning("🛡️ [Whisper Chunk Fallback] Hạ cấp sang CPU int8 cho phân đoạn âm thanh...")
+                    _whisper_model_instance = None
+                    gc.collect()
+                    model = _get_whisper_model(force_cpu=True, model_size_override=WHISPER_MODEL_FALLBACK)
+                    beam_size = 2
+                    use_vad = False
+
+                segments, _ = model.transcribe(
+                    tf_path,
+                    language="vi",
+                    beam_size=beam_size,
+                    condition_on_previous_text=False,
+                    vad_filter=use_vad,
+                    initial_prompt=WHISPER_INITIAL_PROMPT,
+                )
+                lines = []
+                for s in segments:
+                    txt = s.text.strip()
+                    if txt:
+                        lines.append(f"[{int(s.start)//60:02d}:{int(s.start)%60:02d}] {txt}")
+                gc.collect()
+                return "\n".join(lines)
+            except Exception as attempt_err:
+                if attempt == 1:
+                    logger.warning("⚠️ [Whisper Chunk] Lỗi lượt 1 (%s). Thử lại trên CPU...", attempt_err)
+                    continue
+                raise attempt_err
+        return ""
     finally:
         try:
             os.remove(tf_path)
@@ -909,16 +945,22 @@ def _transcribe_chunk_whisper(chunk_bytes: bytes) -> str:
 
 async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any]:
     """
-    Pha 1: Bóc băng giọng nói tiếng Việt bằng Google Gemini Multimodal Audio API qua Multi-Chunk Slicing (Meetily Pattern).
-    Cắt nhỏ file thành các chunk 4 phút mono 16kHz, truyền Base64 inline_data trực tiếp.
-    Tương thích 100% với cả khóa Google AI Studio và Vertex Express (AQ...) không cần File API.
-    Tính toán offset mốc thời gian [MM:SS] chuẩn xác liên tục theo thời gian thực.
+    Pha 1: Bóc băng giọng nói tiếng Việt qua Multi-Chunk Slicing (4 phút/chunk, 16kHz mono).
+    Hỗ trợ bảo vệ chống rớt mạng giữa chừng (Mid-Process Seamless Swapping):
+      - Bọc gọi Gemini trong try...except (httpx.ConnectError, httpx.TimeoutException, Exception) trên TỪNG chunk.
+      - Nếu mất mạng đột ngột ở chunk thứ i: chuyển nóng current_engine = "local", bóc ngay chính chunk i bằng faster-whisper,
+        và các chunk (i+1 .. N) tự động chạy Local Whisper không chờ mạng.
+      - Cập nhật PROGRESS_STORE kèm cờ current_engine liên tục và commit SQLite sau MỖI chunk.
     """
     start_time = time.perf_counter()
     path_obj = Path(file_path)
     file_size = path_obj.stat().st_size
 
-    logger.info("🎙️ [Gemini STT] Bắt đầu xử lý âm thanh: %s (%d KB)", path_obj.name, file_size // 1024)
+    logger.info("🎙️ [Hybrid STT] Bắt đầu xử lý âm thanh: %s (%d KB)", path_obj.name, file_size // 1024)
+
+    current_engine = "gemini" if check_internet_available(timeout_sec=2.0) else "local"
+    if current_engine == "local":
+        logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
 
     if meeting_id > 0:
         update_progress(
@@ -926,19 +968,17 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
             status="transcribing",
             progress_percent=10,
             current_step_detail="Đang phân tích và chia nhỏ tín hiệu âm thanh thành các phân đoạn 4 phút (16kHz mono)...",
+            current_engine=current_engine,
+            engine_used=current_engine,
         )
 
     # Cắt file âm thanh thành các chunk 4 phút
     chunks = await asyncio.to_thread(_slice_audio_file, file_path, 240)
     total_chunks = len(chunks)
-    logger.info("✂️ [Gemini STT] Đã phân đoạn thành %d chunk (4 phút/chunk)", total_chunks)
+    logger.info("✂️ [Hybrid STT] Đã phân đoạn thành %d chunk (4 phút/chunk)", total_chunks)
 
     all_transcript_lines: list[str] = []
     total_duration_sec = chunks[-1]["end_sec"] if chunks else 0.0
-    network_offline = not check_internet_available(timeout_sec=2.0)
-    used_local_fallback = network_offline
-    if network_offline:
-        logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
 
     stt_prompt = (
         "Bạn là chuyên gia gỡ băng âm thanh tiếng Việt trình độ cao.\n"
@@ -956,11 +996,10 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
         chunk_start_sec = chunk["start_sec"]
         chunk_end_sec = chunk["end_sec"]
 
-        pct = 15 + int((c_idx / total_chunks) * 45)
-        active_step_engine = "local" if used_local_fallback else "gemini"
+        pct = 15 + int((c_idx / max(total_chunks, 1)) * 45)
         step_label = (
             f"Local Whisper (Offline) đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)..."
-            if used_local_fallback
+            if current_engine == "local"
             else f"Gemini Multimodal đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)..."
         )
         if meeting_id > 0:
@@ -969,10 +1008,12 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
                 status="transcribing",
                 progress_percent=pct,
                 current_step_detail=step_label,
-                engine_used=active_step_engine,
+                current_engine=current_engine,
+                engine_used=current_engine,
             )
 
-        if not network_offline:
+        chunk_raw = ""
+        if current_engine == "gemini":
             b64_audio = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
             audio_part = {
                 "inline_data": {
@@ -986,28 +1027,41 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
                     api_key=_GEMINI_API_KEY,
                     models_override=GEMINI_AUDIO_MODELS,
                 )
-            except Exception as chunk_err:
-                logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama (chunk %d: %s)", c_idx + 1, chunk_err)
-                network_offline = True
-                used_local_fallback = True
+            except (httpx.ConnectError, httpx.TimeoutException, ConnectionError, Exception) as chunk_err:
+                # Chuyển đổi nóng (Seamless Swapping) sang Local AI ngay tại chunk thứ i
+                _mark_network_offline()
+                current_engine = "local"
+                logger.warning(
+                    "🔄 [Mid-Process Fallback] Rớt mạng / lỗi Gemini tại chunk %d/%d (%s). "
+                    "Chuyển nóng current_engine='local' và bóc băng ngay phân đoạn %d bằng faster-whisper.",
+                    c_idx + 1,
+                    total_chunks,
+                    chunk_err,
+                    c_idx + 1,
+                )
                 if meeting_id > 0:
                     update_progress(
                         meeting_id,
-                        current_step_detail=f"Mất kết nối mạng - Đang chuyển sang Local Whisper cho phân đoạn {c_idx + 1}/{total_chunks}...",
+                        status="transcribing",
+                        progress_percent=pct,
+                        current_step_detail=(
+                            f"Mất kết nối mạng tại phân đoạn {c_idx + 1}/{total_chunks} — "
+                            "Đang chuyển nóng sang Local Whisper (Offline)..."
+                        ),
+                        current_engine="local",
                         engine_used="local",
                     )
                 try:
-                    whisper_res = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
-                    chunk_raw = whisper_res
+                    chunk_raw = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
                 except Exception as w_err:
-                    logger.error("❌ Cả Gemini và Whisper đều thất bại trên chunk %d: %s", c_idx + 1, w_err)
+                    logger.error("❌ Cả Gemini và Local Whisper đều thất bại trên chunk %d/%d: %s", c_idx + 1, total_chunks, w_err)
                     chunk_raw = ""
         else:
-            used_local_fallback = True
+            # Đã chuyển sang Local AI ở chunk trước -> dùng trực tiếp faster-whisper cho các chunk i+1..N
             try:
                 chunk_raw = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
             except Exception as w_err:
-                logger.error("❌ Local Whisper thất bại trên chunk %d: %s", c_idx + 1, w_err)
+                logger.error("❌ Local Whisper thất bại trên chunk %d/%d: %s", c_idx + 1, total_chunks, w_err)
                 chunk_raw = ""
 
         # Chuẩn hóa mốc thời gian [MM:SS] offset theo chunk_start_sec
@@ -1031,15 +1085,16 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
                 start_s = int(chunk_start_sec) % 60
                 all_transcript_lines.append(f"[{start_m:02d}:{start_s:02d}] {line}")
 
+        # Bảo vệ Dữ liệu Thành phần (Partial Persistence): Commit SQLite ngay sau MỖI chunk
         if all_transcript_lines:
-            # Bảo vệ Database: Commit ngay kết quả từng chunk vào SQLite
             await _persist_partial_transcript_safe(meeting_id, "\n".join(all_transcript_lines))
             if meeting_id > 0:
                 preview_text = "\n".join(all_transcript_lines[-6:])
                 update_progress(
                     meeting_id,
                     partial_transcript=preview_text,
-                    engine_used="local" if used_local_fallback else "gemini",
+                    current_engine=current_engine,
+                    engine_used=current_engine,
                 )
 
     if not all_transcript_lines:
@@ -1048,7 +1103,7 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
     full_transcript = "\n".join(all_transcript_lines)
     cleaned_transcript = clean_vietnamese_transcript(full_transcript)
     elapsed = time.perf_counter() - start_time
-    final_engine = "local" if used_local_fallback else "gemini"
+    final_engine = current_engine
 
     # Tạo segments list cho trình phát âm thanh và click-to-seek
     segments: list[dict[str, Any]] = []
@@ -1077,10 +1132,11 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
             progress_percent=60,
             current_step_detail="Gỡ băng 100% âm thanh thực tế hoàn tất! Bắt đầu tổng hợp biên bản chuyên sâu...",
             partial_transcript=cleaned_transcript[:1200] + ("..." if len(cleaned_transcript) > 1200 else ""),
+            current_engine=final_engine,
             engine_used=final_engine,
         )
 
-    logger.info("✅ [STT] Hoàn tất gỡ băng %d dòng trong %.2fs (%d ký tự, engine=%s)", len(all_transcript_lines), elapsed, len(cleaned_transcript), final_engine)
+    logger.info("✅ [STT] Hoàn tất gỡ băng %d dòng trong %.2fs (%d ký tự, current_engine=%s)", len(all_transcript_lines), elapsed, len(cleaned_transcript), final_engine)
 
     return {
         "text": cleaned_transcript,
@@ -1089,6 +1145,7 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
         "duration": round(total_duration_sec, 2),
         "processing_time_seconds": round(elapsed, 2),
         "engine": final_engine,
+        "current_engine": final_engine,
         "engine_used": final_engine,
     }
 
@@ -1174,7 +1231,16 @@ Yêu cầu biên soạn tường thuật chi tiết (Human Secretary Narrative S
                 models_override=GEMINI_TEXT_MODELS,
             )
             narrative_sections.append(narrative_text.strip())
-        except ConnectionError as conn_err:
+        except (httpx.ConnectError, httpx.TimeoutException, ConnectionError) as conn_err:
+            _mark_network_offline()
+            if meeting_id > 0:
+                update_progress(
+                    meeting_id,
+                    status="synthesizing",
+                    current_step_detail="Mất kết nối mạng khi tổng hợp — Đang chuyển nóng sang Local Ollama / Extractive...",
+                    current_engine="local",
+                    engine_used="local",
+                )
             logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
             raise conn_err
         except Exception as seg_err:
@@ -1359,8 +1425,9 @@ def _get_whisper_model(force_cpu: bool = False, model_size_override: str | None 
     """Tải WhisperModel với chiến lược Zero-Crash & Graceful Degradation."""
     global _whisper_model_instance, _current_loaded_model_size, _is_cpu_fallback
 
-    if not force_cpu and _whisper_model_instance is not None and not _is_cpu_fallback:
-        return _whisper_model_instance
+    if _whisper_model_instance is not None:
+        if not force_cpu or _is_cpu_fallback:
+            return _whisper_model_instance
 
     try:
         from faster_whisper import WhisperModel

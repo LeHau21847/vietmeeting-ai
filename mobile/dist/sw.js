@@ -5,7 +5,7 @@ const PRECACHE_ASSETS = [
   "/",
   "/index.html",
   "/_expo/static/css/web-114d64cc39097155544ee87abf74494c.css",
-  "/_expo/static/js/web/AppEntry-3667bcac5790e376719d61002d050419.js",
+  "/_expo/static/js/web/AppEntry-41122bb2df8abdfca852daf760dbc1c5.js",
   "/assets/node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/AntDesign.3a2ba31570920eeb9b1d217cabe58315.ttf",
   "/assets/node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/Entypo.31b5ffea3daddc69dd01a1f3d6cf63c5.ttf",
   "/assets/node_modules/@expo/vector-icons/build/vendor/react-native-vector-icons/Fonts/EvilIcons.140c53a7643ea949007aa9a282153849.ttf",

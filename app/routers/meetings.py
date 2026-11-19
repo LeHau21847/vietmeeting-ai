@@ -32,6 +32,7 @@ from app.schemas.schemas import (
     MeetingUpdate,
 )
 from app.services.ai_service import (
+    PROGRESS_STORE,
     ask_meeting_assistant,
     extract_text_from_docx,
     rewrite_meeting_minutes_and_tasks,
@@ -231,7 +232,11 @@ async def get_meeting(
             },
         )
 
-    return MeetingRead.model_validate(meeting)
+    meeting_dto = MeetingRead.model_validate(meeting)
+    progress_info = PROGRESS_STORE.get(meeting_id)
+    if progress_info:
+        meeting_dto.current_engine = progress_info.get("current_engine") or progress_info.get("engine_used")
+    return meeting_dto
 
 
 # ===========================================================================
