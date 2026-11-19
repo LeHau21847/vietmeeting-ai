@@ -32,7 +32,7 @@ import uuid
 from pathlib import Path
 
 import aiofiles
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, status
+from fastapi import APIRouter, BackgroundTasks, Depends, Form, HTTPException, Request, UploadFile, status
 from fastapi.responses import JSONResponse, StreamingResponse
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -42,6 +42,7 @@ from app.models.models import Meeting, MeetingStatus, Task, TaskStatus
 from app.schemas.schemas import AIProcessingResult, ErrorResponse, TaskExtracted
 from app.services.ai_service import (
     generate_minutes_and_tasks,
+    process_audio_pipeline,
     transcribe_audio,
     init_progress,
     update_progress,
@@ -299,36 +300,37 @@ async def stream_meeting_audio(
 
 
 # ===========================================================================
-# Endpoint: POST /api/v1/audio/{meeting_id}/process
+# Endpoint: POST /api/v1/audio/{meeting_id}/process (Anti-Timeout Async 202)
 # ===========================================================================
 @router.post(
     "/audio/{meeting_id}/process",
-    status_code=status.HTTP_200_OK,
-    summary="Upload audio và xử lý AI",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload audio và kích hoạt tiến trình xử lý AI chạy ngầm (HTTP 202)",
     description=(
-        "Nhận file ghi âm cuộc họp (tối đa 200MB, hỗ trợ 1 tiếng), thực hiện:\n"
-        "1. Chuyển đổi giọng nói thành văn bản (Whisper)\n"
-        "2. Tạo biên bản họp và trích xuất công việc (qwen2.5:1.5b via Ollama)\n\n"
-        "Kết quả được lưu vào database và trả về ngay trong response."
+        "Kiến trúc Anti-Timeout 100% cho file ghi âm dài 50-120 phút:\n"
+        "1. Nhận & lưu tệp âm thanh vào uploads/audio/\n"
+        "2. Đặt trạng thái Meeting = PROCESSING trong SQLite\n"
+        "3. Đẩy pipeline bóc băng + tổng hợp biên bản vào BackgroundTasks\n"
+        "4. Trả về ngay lập tức HTTP 202 Accepted trong 1-2 giây."
     ),
     responses={
-        200: {"description": "Xử lý thành công", "model": AIProcessingResult},
+        202: {"description": "Đã tiếp nhận và đang xử lý ngầm"},
         400: {"description": "File không hợp lệ", "model": ErrorResponse},
         404: {"description": "Meeting không tồn tại", "model": ErrorResponse},
-        409: {"description": "Meeting đã được xử lý hoặc đang xử lý", "model": ErrorResponse},
-        422: {"description": "Dữ liệu request không hợp lệ"},
+        409: {"description": "Meeting đang được xử lý", "model": ErrorResponse},
         500: {"description": "Lỗi server nội bộ", "model": ErrorResponse},
-        503: {"description": "Dịch vụ AI không khả dụng", "model": ErrorResponse},
     },
 )
 async def process_meeting_audio(
     meeting_id: int,
     file: UploadFile,
+    background_tasks: BackgroundTasks,
+    notes: str | None = Form(default=None),
     db: AsyncSession = Depends(get_db),
-) -> AIProcessingResult:
+) -> JSONResponse:
     """
-    Pipeline xử lý audio hoàn chỉnh cho một cuộc họp.
-    Cập nhật PROGRESS_STORE liên tục để frontend polling real-time.
+    Tiếp nhận file audio, lưu nhanh vào ổ đĩa, kích hoạt BackgroundTasks
+    và trả về HTTP 202 Accepted ngay lập tức để chống Timeout tuyệt đối.
     """
     pipeline_start = time.perf_counter()
 
@@ -521,6 +523,7 @@ async def process_meeting_audio(
         await db.commit()  # ✅ Commit để persist vào SQLite
         logger.info("🔄 Meeting %d → status=PROCESSING", meeting_id)
     except Exception as db_exc:
+        await db.rollback()
         logger.error(
             "❌ Không cập nhật được meeting status: %s", str(db_exc), exc_info=True
         )
@@ -538,269 +541,79 @@ async def process_meeting_audio(
         meeting_id,
         status="transcribing",
         progress_percent=5,
-        current_step_detail="File đã lưu! Bắt đầu bóc băng âm thanh...",
+        current_step_detail="Đang bóc băng âm thanh (có thể mất 1-3 phút)...",
     )
 
     # =========================================================================
-    # BƯỚC 6: Transcription bằng Whisper (với progress tracking)
+    # BƯỚC 6: Đẩy toàn bộ pipeline AI vào BackgroundTasks & trả về HTTP 202 ngay!
     # =========================================================================
-    raw_transcript: str = ""
-    transcription_meta: dict = {}
-
-    try:
-        logger.info("🎙️ Bắt đầu transcription cho meeting %d...", meeting_id)
-        transcription_result = await transcribe_audio(
-            str(save_path.resolve()),
-            meeting_id=meeting_id,  # Truyền meeting_id để cập nhật progress
-        )
-        raw_transcript = transcription_result["text"]
-        transcription_meta = {
-            "language_detected": transcription_result.get("language"),
-            "audio_duration_seconds": transcription_result.get("duration"),
-            "transcription_time_seconds": transcription_result.get("processing_time_seconds"),
-            "segments_count": len(transcription_result.get("segments", [])),
-        }
-        logger.info(
-            "✅ Transcription hoàn tất. %d ký tự.", len(raw_transcript)
-        )
-    except FileNotFoundError as exc:
-        await _mark_meeting_failed(db, meeting, str(exc))
-        update_progress(meeting_id, status="failed", progress_percent=0, current_step_detail=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail={
-                "error": "transcription_file_not_found",
-                "message": "File audio đã lưu nhưng không tìm thấy khi xử lý.",
-                "detail": str(exc),
-            },
-        )
-    except ValueError as exc:
-        await _mark_meeting_failed(db, meeting, str(exc))
-        update_progress(meeting_id, status="failed", progress_percent=0, current_step_detail=str(exc))
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "transcription_no_speech",
-                "message": str(exc),
-                "detail": None,
-            },
-        )
-    except RuntimeError as exc:
-        err_msg = str(exc)
-        logger.error("❌ Lỗi bóc băng âm thanh cuộc họp: %s", err_msg)
-        await _mark_meeting_failed(db, meeting, err_msg)
-        update_progress(
-            meeting_id,
-            status="failed",
-            progress_percent=0,
-            current_step_detail=f"Lỗi bóc băng âm thanh: {err_msg}",
-        )
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail={
-                "error": "transcription_failed",
-                "message": (
-                    f"Không thể bóc băng file âm thanh cuộc họp: {err_msg}. "
-                    "Vui lòng kiểm tra lại cấu hình GEMINI_API_KEY chuẩn (bắt đầu bằng 'AIzaSy...') "
-                    "trong menu Cấu hình AI hoặc đảm bảo máy chủ hỗ trợ bóc băng giọng nói."
-                ),
-                "detail": err_msg,
-            },
-        )
-
-    # =========================================================================
-    # BƯỚC 7: Lưu raw_transcript vào DB
-    # =========================================================================
-    try:
-        meeting.raw_transcript = raw_transcript
-        await db.flush()
-        await db.commit()  # Persist transcript ngay để không mất khi có lỗi sau
-    except Exception as db_exc:
-        logger.warning(
-            "⚠️ Không lưu được raw_transcript: %s. Tiếp tục xử lý...", str(db_exc)
-        )
-
-    # =========================================================================
-    # BƯỚC 8: Tạo biên bản và trích xuất tasks bằng LLM (với progress tracking)
-    # =========================================================================
-    minutes_text: str = ""
-    extracted_tasks_raw: list[dict] = []
-    llm_meta: dict = {}
-
-    update_progress(
-        meeting_id,
-        status="summarizing",
-        progress_percent=62,
-        current_step_detail="Bắt đầu phân tích AI tạo biên bản...",
-    )
-
-    try:
-        logger.info("🤖 Bắt đầu tạo biên bản với LLM cho meeting %d...", meeting_id)
-        llm_result = await generate_minutes_and_tasks(
-            raw_transcript,
-            meeting_id=meeting_id,  # Truyền meeting_id để cập nhật progress
-        )
-        minutes_text = llm_result.get("minutes", "")
-        extracted_tasks_raw = llm_result.get("tasks", [])
-        llm_meta = {
-            "llm_model": "qwen2.5:1.5b",
-            "llm_processing_time_seconds": llm_result.get("_llm_processing_time_seconds"),
-            "tasks_extracted_count": len(extracted_tasks_raw),
-        }
-        logger.info(
-            "✅ LLM hoàn tất. Biên bản: %d ký tự | Tasks: %d",
-            len(minutes_text),
-            len(extracted_tasks_raw),
-        )
-    except Exception as exc:
-        logger.warning(
-            "⚠️ Lỗi trong bước sinh biên bản (Meeting %d): %s. Kích hoạt Extractive Fallback...",
-            meeting_id,
-            str(exc),
-        )
-        from app.services.ai_service import (
-            _chunk_transcript,
-            _extractive_chunk_summary,
-            _format_fallback_minutes,
-            _rule_based_task_extractor,
-        )
-        chunks = _chunk_transcript(raw_transcript)
-        summaries = [
-            f"### Phần {i + 1}/{len(chunks)}:\n{_extractive_chunk_summary(c)}"
-            for i, c in enumerate(chunks)
-        ]
-        minutes_text = _format_fallback_minutes(summaries, raw_transcript)
-        extracted_tasks_raw = _rule_based_task_extractor(raw_transcript)
-        llm_meta = {
-            "llm_model": "extractive-rule-based-fallback",
-            "llm_processing_time_seconds": 0.0,
-            "tasks_extracted_count": len(extracted_tasks_raw),
-        }
-
-    # =========================================================================
-    # BƯỚC 9: Cập nhật Meeting – lưu final_minutes + status = COMPLETED
-    # =========================================================================
-    update_progress(
-        meeting_id,
-        progress_percent=96,
-        current_step_detail="Đang lưu biên bản vào database...",
-    )
-
-    try:
-        meeting.final_minutes = minutes_text
-        meeting.status = MeetingStatus.COMPLETED
-        await db.flush()
-        await db.commit()  # CRITICAL – commit để meeting.status=COMPLETED được lưu
-        logger.info("✅ Meeting %d → status=COMPLETED (đã commit vào DB)", meeting_id)
-    except Exception as db_exc:
-        logger.error(
-            "❌ Không cập nhật được final_minutes: %s", str(db_exc), exc_info=True
-        )
-        # Không raise – kết quả vẫn được trả về cho client
-
-    # =========================================================================
-    # BƯỚC 10: Lưu Tasks vào DB
-    # =========================================================================
-    update_progress(
-        meeting_id,
-        progress_percent=98,
-        current_step_detail="Đang lưu danh sách công việc...",
-    )
-
-    saved_tasks_count = 0
-    extracted_task_schemas: list[TaskExtracted] = []
-
-    for task_data in extracted_tasks_raw:
-        # Tạo Pydantic schema để validate và trả về trong response
-        try:
-            task_schema = TaskExtracted(**task_data)
-            extracted_task_schemas.append(task_schema)
-        except Exception as pydantic_exc:
-            logger.warning(
-                "⚠️ Task data không hợp lệ khi tạo schema: %s | data: %s",
-                str(pydantic_exc),
-                task_data,
-            )
-            continue
-
-        # Lưu vào DB
-        try:
-            t_title = task_data.get("title", "Công việc không có tiêu đề")
-            t_desc = task_data.get("description", "")
-            t_assignee = task_data.get("assignee_name") or task_data.get("assignee")
-            t_due = task_data.get("due_date") or task_data.get("deadline")
-
-            extras = []
-            if t_assignee:
-                extras.append(f"Phụ trách: {t_assignee}")
-            if t_due:
-                extras.append(f"Thời hạn: {t_due}")
-
-            if extras:
-                extra_str = " | ".join(extras)
-                t_desc = f"[{extra_str}] {t_desc}" if t_desc else f"[{extra_str}]"
-
-            new_task = Task(
-                meeting_id=meeting_id,
-                assignee_id=None,  # Chưa map với User.id
-                title=t_title,
-                description=t_desc,
-                status=TaskStatus.PENDING,
-                due_date=None,
-            )
-            db.add(new_task)
-            saved_tasks_count += 1
-        except Exception as task_exc:
-            logger.warning(
-                "⚠️ Không lưu được task '%s': %s",
-                task_data.get("title", "?"),
-                str(task_exc),
-            )
-
-    if saved_tasks_count > 0:
-        try:
-            await db.flush()
-            await db.commit()  # Commit tasks vào SQLite
-            logger.info("💾 Đã lưu và commit %d tasks vào DB.", saved_tasks_count)
-        except Exception as flush_exc:
-            logger.error(
-                "❌ Lỗi commit tasks vào DB: %s", str(flush_exc), exc_info=True
-            )
-
-    # =========================================================================
-    # BƯỚC 11: Hoàn tất – Cập nhật progress = 100%
-    # =========================================================================
-    total_elapsed = time.perf_counter() - pipeline_start
-
-    update_progress(
-        meeting_id,
-        status="completed",
-        progress_percent=100,
-        current_step_detail=f"Hoàn tất! Xử lý trong {total_elapsed:.0f} giây.",
-    )
-
-    processing_metadata = {
-        **transcription_meta,
-        **llm_meta,
-        "total_pipeline_time_seconds": round(total_elapsed, 2),
-        "file_size_bytes": len(file_bytes),
-        "saved_file_path": relative_url,
-        "tasks_saved_to_db": saved_tasks_count,
-    }
-
-    logger.info(
-        "🎉 Pipeline hoàn tất cho meeting_id=%d trong %.2fs",
-        meeting_id,
-        total_elapsed,
-    )
-
-    return AIProcessingResult(
+    background_tasks.add_task(
+        process_audio_pipeline,
         meeting_id=meeting_id,
-        audio_file_url=relative_url,
-        raw_transcript=raw_transcript,
-        minutes=minutes_text,
-        tasks=extracted_task_schemas,
-        processing_metadata=processing_metadata,
+        save_path_str=str(save_path.resolve()),
+        relative_url=relative_url,
+        file_size=len(file_bytes),
+        secretary_notes=notes,
+    )
+
+    accept_elapsed = time.perf_counter() - pipeline_start
+    logger.info(
+        "⚡ [HTTP 202 Accepted] Đã tiếp nhận file cho meeting_id=%d trong %.2fs. Tiến trình AI chạy ngầm.",
+        meeting_id,
+        accept_elapsed,
+    )
+
+    return JSONResponse(
+        status_code=status.HTTP_202_ACCEPTED,
+        content={
+            "status": "processing",
+            "meeting_id": meeting_id,
+            "audio_file_url": relative_url,
+            "message": "Đã tiếp nhận tệp âm thanh. Hệ thống đang bóc băng và tổng hợp biên bản ngầm.",
+        },
+    )
+
+
+# ===========================================================================
+# Endpoint: POST /api/v1/meetings/upload (Tạo nhanh hoặc đính kèm file -> HTTP 202)
+# ===========================================================================
+@router.post(
+    "/meetings/upload",
+    status_code=status.HTTP_202_ACCEPTED,
+    summary="Upload audio và xử lý ngầm (HTTP 202 Accepted)",
+    description="Tự động khởi tạo cuộc họp (hoặc dùng meeting_id có sẵn), lưu tệp âm thanh và chạy AI trong BackgroundTasks.",
+)
+async def upload_meeting_audio_async(
+    file: UploadFile,
+    background_tasks: BackgroundTasks,
+    meeting_id: int | None = Form(default=None),
+    title: str | None = Form(default=None),
+    notes: str | None = Form(default=None),
+    db: AsyncSession = Depends(get_db),
+) -> JSONResponse:
+    target_meeting_id = meeting_id
+    if not target_meeting_id:
+        clean_title = (title or "").strip() or (
+            Path(file.filename).stem.replace("_", " ").replace("-", " ").strip()
+            if file.filename
+            else "Cuộc họp ghi âm mới"
+        )
+        new_meeting = Meeting(
+            title=clean_title,
+            status=MeetingStatus.CREATED,
+        )
+        db.add(new_meeting)
+        await db.flush()
+        await db.commit()
+        await db.refresh(new_meeting)
+        target_meeting_id = new_meeting.id
+
+    return await process_meeting_audio(
+        meeting_id=target_meeting_id,
+        file=file,
+        background_tasks=background_tasks,
+        notes=notes,
+        db=db,
     )
 
 
@@ -822,6 +635,13 @@ async def _mark_meeting_failed(
         reason : Lý do thất bại (để lưu vào final_minutes).
     """
     try:
+        try:
+            await db.refresh(meeting)
+        except Exception:
+            pass
+        saved_partial = PROGRESS_STORE.get(meeting.id, {}).get("partial_transcript", "")
+        if saved_partial and not meeting.raw_transcript:
+            meeting.raw_transcript = saved_partial
         meeting.status = MeetingStatus.FAILED
         meeting.final_minutes = f"[PIPELINE FAILED] {reason}"
         await db.flush()
@@ -832,6 +652,7 @@ async def _mark_meeting_failed(
             reason,
         )
     except Exception as exc:
+        await db.rollback()
         logger.error(
             "❌ Không thể đánh dấu Meeting %d là FAILED: %s",
             meeting.id,

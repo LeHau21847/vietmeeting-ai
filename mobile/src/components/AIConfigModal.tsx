@@ -22,6 +22,7 @@ import { Feather } from "@expo/vector-icons";
 import axios from "axios";
 
 import { API_ENDPOINTS, API_TIMEOUT_SHORT_MS } from "@/constants/api";
+import { showToast } from "@/components/VercelToast";
 import type { AIConfigData } from "@/types/meeting";
 
 interface AIConfigModalProps {
@@ -339,39 +340,85 @@ export function AIConfigModal({
 
 /**
  * Huy hiệu AI Engine hiển thị trên Header (bấm để mở Modal cấu hình).
+ * Tự động đổi sang màu cam/xám "Chế độ Ngoại tuyến (Local AI)" khi mất mạng hoặc khi Backend trả về engine_used = "local".
  */
 export function AIEngineBadge({
   onPress,
   currentConfig,
+  engineOverride,
+  forceOffline = false,
 }: {
   onPress: () => void;
   currentConfig?: AIConfigData | null;
+  engineOverride?: "gemini" | "local" | null;
+  forceOffline?: boolean;
 }): React.JSX.Element {
   const [internalConfig, setInternalConfig] = useState<AIConfigData | null>(null);
+  const [fetchFailed, setFetchFailed] = useState(false);
+  const [isBrowserOffline, setIsBrowserOffline] = useState<boolean>(() => {
+    if (Platform.OS === "web" && typeof navigator !== "undefined") {
+      return navigator.onLine === false;
+    }
+    return false;
+  });
+
+  useEffect(() => {
+    if (Platform.OS !== "web" || typeof window === "undefined") return;
+    const onOffline = () => setIsBrowserOffline(true);
+    const onOnline = () => {
+      setIsBrowserOffline(false);
+      setFetchFailed(false);
+    };
+    window.addEventListener("offline", onOffline);
+    window.addEventListener("online", onOnline);
+    return () => {
+      window.removeEventListener("offline", onOffline);
+      window.removeEventListener("online", onOnline);
+    };
+  }, []);
 
   useEffect(() => {
     if (currentConfig) {
       setInternalConfig(currentConfig);
+      setFetchFailed(false);
       return;
     }
     let isMounted = true;
     axios
-      .get<AIConfigData>(API_ENDPOINTS.aiConfig, { timeout: 4000 })
+      .get<AIConfigData>(API_ENDPOINTS.aiConfig, { timeout: 3500 })
       .then((res) => {
-        if (isMounted) setInternalConfig(res.data);
+        if (isMounted) {
+          setInternalConfig(res.data);
+          setFetchFailed(false);
+        }
       })
-      .catch(() => {});
+      .catch(() => {
+        if (isMounted) {
+          setFetchFailed(true);
+          showToast({
+            title: "Mất kết nối Internet - Chuyển sang Local AI",
+            description: "Đang sử dụng Faster-Whisper & Ollama nội bộ.",
+            type: "offline",
+          });
+        }
+      });
     return () => {
       isMounted = false;
     };
   }, [currentConfig]);
 
   const activeConfig = currentConfig || internalConfig;
-  const isGemini =
-    !activeConfig ||
-    activeConfig.active_engine === "gemini" ||
-    activeConfig.preferred_engine === "gemini" ||
-    (Boolean(activeConfig.has_gemini_key) && activeConfig.preferred_engine !== "local");
+  const isOfflineOrLocal =
+    isBrowserOffline ||
+    forceOffline ||
+    fetchFailed ||
+    engineOverride === "local" ||
+    activeConfig?.active_engine === "local" ||
+    activeConfig?.engine_used === "local" ||
+    activeConfig?.is_offline_fallback === true ||
+    activeConfig?.preferred_engine === "local";
+
+  const isGemini = !isOfflineOrLocal;
 
   return (
     <Pressable
@@ -385,18 +432,18 @@ export function AIEngineBadge({
       <View
         style={[
           badgeStyles.statusDot,
-          { backgroundColor: isGemini ? "#2563EB" : "#64748B" },
+          { backgroundColor: isGemini ? "#2563EB" : "#F59E0B" },
         ]}
       />
       <Feather
-        name={isGemini ? "cloud" : "cpu"}
+        name={isGemini ? "cloud" : "wifi-off"}
         size={12}
-        color={isGemini ? "#2563EB" : "#94A3B8"}
+        color={isGemini ? "#2563EB" : "#F59E0B"}
       />
       <Text style={[badgeStyles.badgeText, isGemini ? badgeStyles.geminiText : badgeStyles.localText]}>
-        {isGemini ? "Gemini Pro AI" : "Local AI"}
+        {isGemini ? "Gemini Pro AI" : "Chế độ Ngoại tuyến (Local AI)"}
       </Text>
-      <Feather name="chevron-down" size={11} color={isGemini ? "#2563EB" : "#64748B"} />
+      <Feather name="chevron-down" size={11} color={isGemini ? "#2563EB" : "#F59E0B"} />
     </Pressable>
   );
 }
@@ -421,8 +468,8 @@ const badgeStyles = StyleSheet.create({
     borderColor: "rgba(37, 99, 235, 0.28)",
   },
   localBadge: {
-    backgroundColor: "rgba(100, 116, 139, 0.08)",
-    borderColor: "rgba(100, 116, 139, 0.25)",
+    backgroundColor: "rgba(245, 158, 11, 0.12)",
+    borderColor: "rgba(245, 158, 11, 0.38)",
   },
   badgeText: {
     fontSize: 12,
@@ -432,7 +479,7 @@ const badgeStyles = StyleSheet.create({
     color: "#3B82F6",
   },
   localText: {
-    color: "#94A3B8",
+    color: "#F59E0B",
   },
 });
 

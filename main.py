@@ -172,10 +172,16 @@ app.add_middleware(
 
 @app.middleware("http")
 async def add_pna_and_cors_headers(request, call_next):
-    """Đảm bảo mọi request và preflight PNA (Private Network Access) của Chrome/Cốc Cốc đều thành công."""
+    """Đảm bảo mọi request, preflight PNA và cache tĩnh Offline hoạt động mượt mà."""
     response = await call_next(request)
     if request.headers.get("access-control-request-private-network"):
         response.headers["Access-Control-Allow-Private-Network"] = "true"
+    path = request.url.path
+    if path.startswith(("/_expo/", "/assets/")) or path == "/favicon.ico":
+        response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+    elif path == "/sw.js":
+        response.headers["Cache-Control"] = "no-cache"
+        response.headers["Service-Worker-Allowed"] = "/"
     return response
 
 

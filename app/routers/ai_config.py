@@ -38,6 +38,8 @@ class AIConfigResponse(BaseModel):
     gemini_api_key_masked: str
     preferred_engine: str
     active_engine: str
+    engine_used: str = "gemini"
+    is_offline_fallback: bool = False
     active_model: str
     supported_models: list[str]
 

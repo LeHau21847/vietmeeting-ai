@@ -29,6 +29,8 @@ import axios, { AxiosError } from "axios";
 
 import { API_ENDPOINTS, API_TIMEOUT_SHORT_MS, BASE_URL } from "@/constants/api";
 import { AIEngineBadge, AIConfigModal } from "@/components/AIConfigModal";
+import { showToast } from "@/components/VercelToast";
+import { MeetingSkeletonList } from "@/components/VercelUI";
 import type {
   AIConfigData,
   APIErrorResponse,
@@ -172,6 +174,7 @@ export default function HomeScreen(): React.JSX.Element {
   // Modal cấu hình AI
   const [aiConfigModalVisible, setAiConfigModalVisible] = useState(false);
   const [aiConfig, setAiConfig] = useState<AIConfigData | null>(null);
+  const [aiConfigOffline, setAiConfigOffline] = useState(false);
 
   // Cross-meeting Urgent Tasks
   const [recentTasks, setRecentTasks] = useState<CrossMeetingTask[]>([]);
@@ -184,8 +187,25 @@ export default function HomeScreen(): React.JSX.Element {
         timeout: API_TIMEOUT_SHORT_MS,
       });
       setAiConfig(res.data);
+      const isOff =
+        res.data.is_offline_fallback === true ||
+        res.data.active_engine === "local" ||
+        res.data.engine_used === "local";
+      setAiConfigOffline(isOff);
+      if (res.data.is_offline_fallback) {
+        showToast({
+          title: "Mất kết nối Internet - Chuyển sang Local AI",
+          description: "Đang sử dụng Faster-Whisper & Ollama nội bộ.",
+          type: "offline",
+        });
+      }
     } catch {
-      // ignore
+      setAiConfigOffline(true);
+      showToast({
+        title: "Mất kết nối Internet - Chuyển sang Local AI",
+        description: "Hệ thống tự động chuyển sang chế độ Ngoại tuyến.",
+        type: "offline",
+      });
     }
   }, []);
 
@@ -345,8 +365,17 @@ export default function HomeScreen(): React.JSX.Element {
           timeout: API_TIMEOUT_SHORT_MS,
         });
         setMeetings((prev) => prev.filter((m) => m.id !== meeting.id));
+        showToast({
+          title: "Đã xóa biên bản cuộc họp",
+          description: meeting.title,
+          type: "success",
+        });
       } catch {
-        Alert.alert("Lỗi", "Không thể xóa cuộc họp. Vui lòng thử lại.");
+        showToast({
+          title: "Không thể xóa cuộc họp",
+          description: "Vui lòng kiểm tra kết nối máy chủ và thử lại.",
+          type: "error",
+        });
       }
     };
 
@@ -380,11 +409,19 @@ export default function HomeScreen(): React.JSX.Element {
     if (Platform.OS === "web") {
       try {
         window.open(url, "_blank");
+        showToast({
+          title: "Đang tải tệp Word (.doc) chuẩn Nghị định 30",
+          description: meeting.title,
+          type: "success",
+        });
       } catch {
         // fallback
       }
     } else {
-      Alert.alert("Thông báo", "Vui lòng mở ứng dụng trên trình duyệt web để tải file Word trực tiếp.");
+      showToast({
+        title: "Vui lòng mở trên trình duyệt Web để tải tệp Word (.doc)",
+        type: "info",
+      });
     }
   };
 
@@ -409,6 +446,11 @@ export default function HomeScreen(): React.JSX.Element {
             );
             const newM = createRes.data;
             setMeetings((prev) => [newM, ...prev]);
+            showToast({
+              title: "Đã khởi tạo phiên họp từ tệp âm thanh",
+              description: newM.title,
+              type: "success",
+            });
 
             // 2. Chuyển thẳng vào Studio
             navigation.navigate("Recording", {
@@ -417,7 +459,10 @@ export default function HomeScreen(): React.JSX.Element {
               meetingStatus: "created",
             });
           } catch {
-            Alert.alert("Lỗi", "Không thể khởi tạo cuộc họp từ file âm thanh.");
+            showToast({
+              title: "Không thể khởi tạo cuộc họp từ tệp âm thanh",
+              type: "error",
+            });
           }
         };
         input.click();
@@ -474,6 +519,7 @@ export default function HomeScreen(): React.JSX.Element {
             <AIEngineBadge
               onPress={() => setAiConfigModalVisible(true)}
               currentConfig={aiConfig}
+              forceOffline={aiConfigOffline}
             />
 
             {/* Làm mới */}
@@ -626,14 +672,9 @@ export default function HomeScreen(): React.JSX.Element {
               </View>
             </View>
 
-            {/* DANH SÁCH CUỘC HỌP */}
+            {/* DANH SÁCH CUỘC HỌP – SKELETON LOADING CHUẨN VERCEL */}
             {isLoading ? (
-              <View style={styles.centerContainer}>
-                <ActivityIndicator size="small" color={palette.accent} />
-                <Text style={[styles.loadingText, { color: palette.textSecondary }]}>
-                  Đang tải danh sách cuộc họp...
-                </Text>
-              </View>
+              <MeetingSkeletonList isDark={isDark} count={4} />
             ) : loadError ? (
               <View style={styles.centerContainer}>
                 <View style={[styles.errorIconBox, { backgroundColor: "rgba(239, 68, 68, 0.1)" }]}>

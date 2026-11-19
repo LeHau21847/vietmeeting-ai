@@ -33,6 +33,7 @@ import logging
 import mimetypes
 import os
 import re
+import socket
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -154,9 +155,119 @@ def _read_env_value(key: str, default: str = "") -> str:
 _GEMINI_API_KEY: str = _read_env_value("GEMINI_API_KEY", "")
 _PREFERRED_AI_ENGINE: str = _read_env_value("PREFERRED_AI_ENGINE", "gemini")
 
-# Cache lưu kết quả dò model động
+# Cache lưu kết quả dò model động & trạng thái mạng
 _discovered_gemini_models: list[str] = []
 _discovered_models_timestamp: float = 0.0
+_internet_status_cache: bool = True
+_internet_check_ts: float = 0.0
+
+
+def _mark_network_offline() -> None:
+    """Đánh dấu mất kết nối mạng tức thì và log ra terminal."""
+    global _internet_status_cache, _internet_check_ts
+    _internet_status_cache = False
+    _internet_check_ts = time.time()
+    logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
+
+
+def check_internet_available(timeout_sec: float = 2.0) -> bool:
+    """
+    Kiểm tra kết nối Internet siêu tốc trong <= 2 giây.
+    Nếu không có WiFi / Internet, trả về False ngay lập tức để kích hoạt Local AI.
+    """
+    global _internet_status_cache, _internet_check_ts
+    now = time.time()
+    if now - _internet_check_ts < 4.0:
+        return _internet_status_cache
+
+    is_online = False
+    for host, port in [("generativelanguage.googleapis.com", 443), ("8.8.8.8", 53)]:
+        try:
+            with socket.create_connection((host, port), timeout=timeout_sec):
+                is_online = True
+                break
+        except OSError:
+            continue
+
+    _internet_status_cache = is_online
+    _internet_check_ts = now
+    if not is_online:
+        logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
+    return is_online
+
+
+async def _persist_partial_transcript_safe(meeting_id: int, partial_text: str) -> None:
+    """
+    Lưu an toàn bản gỡ băng thô của các chunk đã hoàn thành vào SQLite.
+    Đảm bảo kể cả khi Local AI bị tràn RAM ở các chunk sau, dữ liệu của các chunk trước vẫn được bảo toàn 100%.
+    """
+    if meeting_id <= 0 or not partial_text or not partial_text.strip():
+        return
+    try:
+        from app.core.database import async_session_maker
+        from app.models.models import Meeting
+
+        async with async_session_maker() as session:
+            try:
+                meeting_obj = await session.get(Meeting, meeting_id)
+                if meeting_obj is not None:
+                    meeting_obj.raw_transcript = partial_text
+                    await session.flush()
+                    await session.commit()
+            except Exception as commit_err:
+                await session.rollback()
+                logger.warning("⚠️ Rollback khi lưu partial transcript meeting %d: %s", meeting_id, commit_err)
+    except Exception as db_err:
+        logger.debug("⚠️ Không thể lưu tạm partial transcript: %s", db_err)
+
+
+def extract_text_from_docx(file_input: bytes | str | Path) -> str:
+    """
+    Trích xuất toàn bộ nội dung văn bản và cấu trúc bảng biểu từ tệp mẫu Word (.docx).
+    Dùng cho tính năng Custom Template Learner giúp AI học 100% hệ thống đề mục,
+    cách kẻ bảng và văn phong biểu mẫu riêng của cơ quan/doanh nghiệp.
+    """
+    try:
+        import docx
+        from docx.oxml.text.paragraph import CT_P
+        from docx.oxml.table import CT_Tbl
+        from docx.text.paragraph import Paragraph
+        from docx.table import Table
+    except ImportError as exc:
+        raise RuntimeError(
+            "Thư viện 'python-docx' chưa được cài đặt. Vui lòng chạy: pip install python-docx"
+        ) from exc
+
+    if isinstance(file_input, (bytes, bytearray)):
+        doc = docx.Document(io.BytesIO(file_input))
+    else:
+        doc = docx.Document(str(file_input))
+
+    blocks: list[str] = []
+
+    # Duyệt tuần tự theo đúng thứ tự xuất hiện của đoạn văn và bảng biểu trong tài liệu
+    for child in doc.element.body.iterchildren():
+        if isinstance(child, CT_P):
+            para = Paragraph(child, doc)
+            text = para.text.strip()
+            if text:
+                blocks.append(text)
+        elif isinstance(child, CT_Tbl):
+            table = Table(child, doc)
+            table_lines: list[str] = []
+            for r_idx, row in enumerate(table.rows):
+                cells = [c.text.strip().replace("\n", " ") for c in row.cells]
+                if any(cells):
+                    table_lines.append("| " + " | ".join(cells) + " |")
+                    if r_idx == 0:
+                        table_lines.append("| " + " | ".join(["---"] * len(cells)) + " |")
+            if table_lines:
+                blocks.append("\n".join(table_lines))
+
+    extracted = "\n".join(blocks).strip()
+    if not extracted:
+        raise ValueError("Tệp biểu mẫu (.docx) rỗng hoặc không chứa văn bản hợp lệ.")
+    return extracted
 
 
 def _get_available_gemini_model(api_key: str | None = None) -> str:
@@ -172,8 +283,11 @@ def _get_available_gemini_model(api_key: str | None = None) -> str:
     if _discovered_gemini_models and (time.time() - _discovered_models_timestamp < 600.0):
         return _discovered_gemini_models[0]
 
+    if not check_internet_available(timeout_sec=2.0):
+        return "gemini-2.5-flash"
+
     try:
-        with httpx.Client(timeout=6.0) as client:
+        with httpx.Client(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
             res = client.get(f"{GEMINI_API_BASE}/v1beta/models?key={key}")
             if res.status_code == 200:
                 data = res.json()
@@ -187,6 +301,9 @@ def _get_available_gemini_model(api_key: str | None = None) -> str:
                     _discovered_gemini_models = matched
                     _discovered_models_timestamp = time.time()
                     return matched[0]
+    except (httpx.ConnectError, httpx.TimeoutException) as net_exc:
+        _mark_network_offline()
+        logger.debug("⚠️ Lỗi mạng khi dò model Gemini đồng bộ: %s", net_exc)
     except Exception as exc:
         logger.debug("⚠️ Lỗi dò model Gemini đồng bộ: %s", exc)
 
@@ -196,7 +313,7 @@ def _get_available_gemini_model(api_key: str | None = None) -> str:
 async def _get_available_gemini_models_async(api_key: str | None = None) -> list[str]:
     """
     Dò danh sách tất cả các model Google Gemini mà API Key của người dùng được phép truy cập.
-    Ưu tiên theo thứ tự: gemini-2.5-flash -> gemini-2.5-pro -> gemini-2.0-flash...
+    Bắt lỗi mất mạng ngay trong 2 giây đầu tiên.
     """
     key = api_key or _GEMINI_API_KEY
     if not key:
@@ -207,7 +324,7 @@ async def _get_available_gemini_models_async(api_key: str | None = None) -> list
         return _discovered_gemini_models
 
     try:
-        async with httpx.AsyncClient(timeout=8.0) as client:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(3.0, connect=2.0)) as client:
             res = await client.get(f"{GEMINI_API_BASE}/v1beta/models?key={key}")
             if res.status_code == 200:
                 data = res.json()
@@ -225,6 +342,9 @@ async def _get_available_gemini_models_async(api_key: str | None = None) -> list
                     _discovered_models_timestamp = time.time()
                     logger.info("✨ [Gemini Dynamic Discovery] Đã dò thấy %d models. Model số 1: %s", len(matched), matched[0])
                     return matched
+    except (httpx.ConnectError, httpx.TimeoutException) as net_err:
+        _mark_network_offline()
+        raise ConnectionError("No WiFi detected. Falling back to Local Whisper & Ollama") from net_err
     except Exception as exc:
         logger.warning("⚠️ Lỗi dò danh sách Gemini models: %s. Dùng danh sách ưu tiên.", exc)
 
@@ -244,7 +364,7 @@ def is_valid_gemini_key(key: str | None) -> bool:
 
 
 def get_ai_config() -> dict[str, Any]:
-    """Lấy thông tin cấu hình AI hiện tại cho client."""
+    """Lấy thông tin cấu hình AI hiện tại cho client (kèm phát hiện mất mạng tức thì)."""
     has_key = is_valid_gemini_key(_GEMINI_API_KEY)
     masked_key = ""
     if has_key:
@@ -254,14 +374,30 @@ def get_ai_config() -> dict[str, Any]:
         else:
             masked_key = "***"
 
-    active_engine = "gemini" if (has_key and _PREFERRED_AI_ENGINE != "local") else "local"
+    is_online = check_internet_available(timeout_sec=1.5)
+    is_offline_fallback = False
+
+    if has_key and _PREFERRED_AI_ENGINE != "local":
+        if is_online:
+            active_engine = "gemini"
+        else:
+            active_engine = "local"
+            is_offline_fallback = True
+    else:
+        active_engine = "local"
 
     return {
         "has_gemini_key": has_key,
         "gemini_api_key_masked": masked_key,
         "preferred_engine": _PREFERRED_AI_ENGINE,
         "active_engine": active_engine,
-        "active_model": _discovered_gemini_models[0] if _discovered_gemini_models else ("gemini-2.5-flash" if active_engine == "gemini" else "whisper-small + qwen2.5:1.5b"),
+        "engine_used": active_engine,
+        "is_offline_fallback": is_offline_fallback,
+        "active_model": (
+            _discovered_gemini_models[0]
+            if (_discovered_gemini_models and active_engine == "gemini")
+            else ("gemini-2.5-flash" if active_engine == "gemini" else "whisper-small + qwen2.5:1.5b")
+        ),
         "supported_models": GEMINI_MODELS,
     }
 
@@ -336,6 +472,7 @@ def init_progress(meeting_id: int) -> None:
         "progress_percent": 0,
         "current_step_detail": "Đang chuẩn bị xử lý file audio...",
         "partial_transcript": "",
+        "engine_used": "gemini" if (_PREFERRED_AI_ENGINE != "local" and is_valid_gemini_key(_GEMINI_API_KEY)) else "local",
     }
 
 
@@ -346,6 +483,7 @@ def update_progress(
     progress_percent: int | None = None,
     current_step_detail: str | None = None,
     partial_transcript: str | None = None,
+    engine_used: str | None = None,
 ) -> None:
     """Cập nhật tiến trình cho một meeting."""
     if meeting_id not in PROGRESS_STORE:
@@ -359,6 +497,8 @@ def update_progress(
         store["current_step_detail"] = current_step_detail
     if partial_transcript is not None:
         store["partial_transcript"] = partial_transcript
+    if engine_used is not None:
+        store["engine_used"] = engine_used
 
 
 def get_progress(meeting_id: int) -> dict[str, Any]:
@@ -368,6 +508,7 @@ def get_progress(meeting_id: int) -> dict[str, Any]:
         "progress_percent": 0,
         "current_step_detail": "Không có dữ liệu tiến trình.",
         "partial_transcript": "",
+        "engine_used": "gemini",
     })
 
 
@@ -577,13 +718,18 @@ async def _call_gemini_generate_content(
     if not key:
         raise ValueError("Chưa cấu hình GEMINI_API_KEY.")
 
+    if not check_internet_available(timeout_sec=2.0):
+        raise ConnectionError("No WiFi detected. Falling back to Local Whisper & Ollama")
+
     if models_override:
         model_list = models_override
     else:
         discovered = await _get_available_gemini_models_async(key)
         model_list = discovered if discovered else list(GEMINI_PRIORITY_MODELS)
 
-    async with httpx.AsyncClient(timeout=600.0) as client:
+    # Connect timeout 2.5s để phát hiện rớt mạng tức thì (không treo 60s)
+    fast_timeout = httpx.Timeout(300.0, connect=2.5)
+    async with httpx.AsyncClient(timeout=fast_timeout) as client:
         last_error = None
         for model in model_list:
             # Quy chuẩn maxOutputTokens: 65536 cho dòng 2.5/3.x/latest, 8192 cho 2.0/1.5
@@ -646,6 +792,9 @@ async def _call_gemini_generate_content(
                     last_error = f"HTTP {res.status_code}: {res.text[:200]}"
                     if res.status_code in (429, 503):
                         await asyncio.sleep(1.0)
+            except (httpx.ConnectError, httpx.TimeoutException) as net_err:
+                _mark_network_offline()
+                raise ConnectionError("No WiFi detected. Falling back to Local Whisper & Ollama") from net_err
             except Exception as exc:
                 logger.warning("⚠️ [Gemini API] Lỗi kết nối model '%s': %s", model, exc)
                 last_error = str(exc)
@@ -786,6 +935,10 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
 
     all_transcript_lines: list[str] = []
     total_duration_sec = chunks[-1]["end_sec"] if chunks else 0.0
+    network_offline = not check_internet_available(timeout_sec=2.0)
+    used_local_fallback = network_offline
+    if network_offline:
+        logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
 
     stt_prompt = (
         "Bạn là chuyên gia gỡ băng âm thanh tiếng Việt trình độ cao.\n"
@@ -804,35 +957,57 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
         chunk_end_sec = chunk["end_sec"]
 
         pct = 15 + int((c_idx / total_chunks) * 45)
+        active_step_engine = "local" if used_local_fallback else "gemini"
+        step_label = (
+            f"Local Whisper (Offline) đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)..."
+            if used_local_fallback
+            else f"Gemini Multimodal đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)..."
+        )
         if meeting_id > 0:
             update_progress(
                 meeting_id,
                 status="transcribing",
                 progress_percent=pct,
-                current_step_detail=f"Gemini Multimodal đang gỡ băng phân đoạn {c_idx + 1}/{total_chunks} ({chunk_start_sec/60:.0f}m - {chunk_end_sec/60:.0f}m)...",
+                current_step_detail=step_label,
+                engine_used=active_step_engine,
             )
 
-        b64_audio = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
-        audio_part = {
-            "inline_data": {
-                "mime_type": "audio/mp3",
-                "data": b64_audio,
+        if not network_offline:
+            b64_audio = base64.b64encode(chunk["audio_bytes"]).decode("utf-8")
+            audio_part = {
+                "inline_data": {
+                    "mime_type": "audio/mp3",
+                    "data": b64_audio,
+                }
             }
-        }
-
-        try:
-            chunk_raw = await _call_gemini_generate_content(
-                parts=[audio_part, {"text": stt_prompt}],
-                api_key=_GEMINI_API_KEY,
-                models_override=GEMINI_AUDIO_MODELS,
-            )
-        except Exception as chunk_err:
-            logger.warning("⚠️ Lỗi gỡ băng chunk %d bằng Gemini: %s. Thử fallback Whisper...", c_idx + 1, chunk_err)
             try:
-                whisper_res = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
-                chunk_raw = whisper_res
+                chunk_raw = await _call_gemini_generate_content(
+                    parts=[audio_part, {"text": stt_prompt}],
+                    api_key=_GEMINI_API_KEY,
+                    models_override=GEMINI_AUDIO_MODELS,
+                )
+            except Exception as chunk_err:
+                logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama (chunk %d: %s)", c_idx + 1, chunk_err)
+                network_offline = True
+                used_local_fallback = True
+                if meeting_id > 0:
+                    update_progress(
+                        meeting_id,
+                        current_step_detail=f"Mất kết nối mạng - Đang chuyển sang Local Whisper cho phân đoạn {c_idx + 1}/{total_chunks}...",
+                        engine_used="local",
+                    )
+                try:
+                    whisper_res = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
+                    chunk_raw = whisper_res
+                except Exception as w_err:
+                    logger.error("❌ Cả Gemini và Whisper đều thất bại trên chunk %d: %s", c_idx + 1, w_err)
+                    chunk_raw = ""
+        else:
+            used_local_fallback = True
+            try:
+                chunk_raw = await asyncio.to_thread(_transcribe_chunk_whisper, chunk["audio_bytes"])
             except Exception as w_err:
-                logger.error("❌ Cả Gemini và Whisper đều thất bại trên chunk %d: %s", c_idx + 1, w_err)
+                logger.error("❌ Local Whisper thất bại trên chunk %d: %s", c_idx + 1, w_err)
                 chunk_raw = ""
 
         # Chuẩn hóa mốc thời gian [MM:SS] offset theo chunk_start_sec
@@ -856,12 +1031,16 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
                 start_s = int(chunk_start_sec) % 60
                 all_transcript_lines.append(f"[{start_m:02d}:{start_s:02d}] {line}")
 
-        if meeting_id > 0 and all_transcript_lines:
-            preview_text = "\n".join(all_transcript_lines[-6:])
-            update_progress(
-                meeting_id,
-                partial_transcript=preview_text,
-            )
+        if all_transcript_lines:
+            # Bảo vệ Database: Commit ngay kết quả từng chunk vào SQLite
+            await _persist_partial_transcript_safe(meeting_id, "\n".join(all_transcript_lines))
+            if meeting_id > 0:
+                preview_text = "\n".join(all_transcript_lines[-6:])
+                update_progress(
+                    meeting_id,
+                    partial_transcript=preview_text,
+                    engine_used="local" if used_local_fallback else "gemini",
+                )
 
     if not all_transcript_lines:
         raise RuntimeError("Tệp âm thanh không chứa giọng nói có thể nhận diện được.")
@@ -869,6 +1048,7 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
     full_transcript = "\n".join(all_transcript_lines)
     cleaned_transcript = clean_vietnamese_transcript(full_transcript)
     elapsed = time.perf_counter() - start_time
+    final_engine = "local" if used_local_fallback else "gemini"
 
     # Tạo segments list cho trình phát âm thanh và click-to-seek
     segments: list[dict[str, Any]] = []
@@ -897,9 +1077,10 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
             progress_percent=60,
             current_step_detail="Gỡ băng 100% âm thanh thực tế hoàn tất! Bắt đầu tổng hợp biên bản chuyên sâu...",
             partial_transcript=cleaned_transcript[:1200] + ("..." if len(cleaned_transcript) > 1200 else ""),
+            engine_used=final_engine,
         )
 
-    logger.info("✅ [Gemini STT] Hoàn tất gỡ băng %d dòng trong %.2fs (%d ký tự)", len(all_transcript_lines), elapsed, len(cleaned_transcript))
+    logger.info("✅ [STT] Hoàn tất gỡ băng %d dòng trong %.2fs (%d ký tự, engine=%s)", len(all_transcript_lines), elapsed, len(cleaned_transcript), final_engine)
 
     return {
         "text": cleaned_transcript,
@@ -907,27 +1088,33 @@ async def _gemini_transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[
         "segments": segments,
         "duration": round(total_duration_sec, 2),
         "processing_time_seconds": round(elapsed, 2),
-        "engine": "google-gemini",
+        "engine": final_engine,
+        "engine_used": final_engine,
     }
 
 
-async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: int = 0) -> dict[str, Any]:
+async def _gemini_generate_minutes_and_tasks(
+    transcript_text: str,
+    meeting_id: int = 0,
+    template_text: str | None = None,
+    secretary_notes: str | None = None,
+) -> dict[str, Any]:
     """
     Pha 2: Fabric Sliding-Window Map-Reduce Narrative Engine
     - Map Step: Chia transcript thành các phân đoạn 4,000 - 5,000 ký tự.
       Mỗi phân đoạn gọi Gemini để soạn thảo tường thuật chi tiết (400 - 800 từ) bảo toàn 100% diễn giả,
       số liệu, tờ trình, nghị định, ý kiến tranh luận.
-    - Reduce Step: Ghép toàn bộ các đoạn tường thuật vào Phần II (không nén mất mát).
-      Gọi Gemini tổng hợp Phần I (Bối cảnh/Thành phần), Phần III (Kết luận/Chỉ đạo), và trích xuất Action Items JSON.
+    - Reduce Step: Ghép toàn bộ các đoạn tường thuật vào Phần II (không nén mất mát), hoặc điền chuẩn xác
+      100% theo BIỂU MẪU MẪU (.docx) nếu người dùng cung cấp template_text.
     """
     start_time = time.perf_counter()
 
     if meeting_id > 0:
         update_progress(
             meeting_id,
-            status="summarizing",
+            status="synthesizing",
             progress_percent=65,
-            current_step_detail="Khởi động Fabric Narrative Engine: Chuẩn bị phân tích sâu lời thoại...",
+            current_step_detail="Đang tổng hợp biên bản...",
         )
 
     # 1. Chia transcript thành các đoạn 4,000 - 5,000 ký tự
@@ -960,9 +1147,9 @@ async def _gemini_generate_minutes_and_tasks(transcript_text: str, meeting_id: i
         if meeting_id > 0:
             update_progress(
                 meeting_id,
-                status="summarizing",
+                status="synthesizing",
                 progress_percent=pct,
-                current_step_detail=f"Fabric Engine đang biên soạn tường thuật chi tiết phân đoạn {s_idx + 1}/{total_segments}...",
+                current_step_detail=f"Đang tổng hợp biên bản (phân đoạn {s_idx + 1}/{total_segments})...",
             )
 
         segment_prompt = f"""Bạn là Thư ký cấp cao phụ trách lập biên bản các cuộc họp hành chính, chính phủ, doanh nghiệp lớn tại Việt Nam theo Nghị định 30/2020/NĐ-CP.
@@ -987,6 +1174,9 @@ Yêu cầu biên soạn tường thuật chi tiết (Human Secretary Narrative S
                 models_override=GEMINI_TEXT_MODELS,
             )
             narrative_sections.append(narrative_text.strip())
+        except ConnectionError as conn_err:
+            logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama")
+            raise conn_err
         except Exception as seg_err:
             logger.warning("⚠️ Lỗi biên soạn phân đoạn %d: %s. Dùng trích đoạn lời thoại...", s_idx + 1, seg_err)
             narrative_sections.append(segment_content)
@@ -997,16 +1187,87 @@ Yêu cầu biên soạn tường thuật chi tiết (Human Secretary Narrative S
     if meeting_id > 0:
         update_progress(
             meeting_id,
-            status="summarizing",
+            status="synthesizing",
             progress_percent=88,
-            current_step_detail="Đang tổng hợp Bối cảnh chung (Phần I), Kết luận chỉ đạo (Phần III) và Danh mục công việc...",
+            current_step_detail="Đang hoàn thiện cấu trúc biên bản và danh mục phân công nhiệm vụ...",
         )
+
+    notes_block = (
+        f"\n\nGHI CHÚ TRỌNG TÂM CỦA THƯ KÝ (Cần làm nổi bật trong kết luận):\n{secretary_notes.strip()}\n"
+        if secretary_notes and secretary_notes.strip()
+        else ""
+    )
+
+    # Nếu có BIỂU MẪU TÙY CHỈNH (.docx), bơm thẳng vào System Prompt bước Reduce
+    if template_text and template_text.strip():
+        template_system_prompt = (
+            "BẮT BUỘC viết biên bản tuân thủ CHÍNH XÁC 100% hệ thống đề mục (I, II, III...), "
+            "cách kẻ bảng và văn phong của BIỂU MẪU MẪU sau đây. "
+            "Trích xuất thông tin từ Bản gỡ băng để điền vào biểu mẫu này.\n\n"
+            f"=== BIỂU MẪU MẪU ===\n{template_text.strip()}\n=== HẾT BIỂU MẪU MẪU ==="
+        )
+        template_user_prompt = f"""Dưới đây là toàn bộ diễn biến thảo luận chi tiết từ Bản gỡ băng cuộc họp:
+---
+{section_2_text[:20000]}
+---{notes_block}
+
+Hãy điền đầy đủ, chính xác 100% dữ liệu từ Bản gỡ băng vào BIỂU MẪU MẪU đã cung cấp và trích xuất danh sách nhiệm vụ.
+Trả về DUY NHẤT một JSON Object hợp lệ theo mẫu:
+{{
+  "minutes": "Toàn văn biên bản tuân thủ chính xác 100% cấu trúc đề mục, bảng biểu và văn phong của BIỂU MẪU MẪU...",
+  "tasks": [
+    {{
+      "title": "Tên công việc hoặc chỉ đạo cụ thể",
+      "description": "Yêu cầu chi tiết",
+      "assignee": "Cơ quan, đơn vị hoặc người chịu trách nhiệm",
+      "deadline": "Thời hạn hoặc kế hoạch hoàn thành",
+      "priority": "High"
+    }}
+  ]
+}}"""
+        gemini_tpl_raw = await _call_gemini_generate_content(
+            parts=[{"text": template_user_prompt}],
+            system_instruction=template_system_prompt,
+            response_mime_type="application/json",
+            api_key=_GEMINI_API_KEY,
+            models_override=GEMINI_TEXT_MODELS,
+        )
+        final_minutes = ""
+        tasks_list: list[dict[str, Any]] = []
+        try:
+            tpl_data = json.loads(gemini_tpl_raw)
+            final_minutes = str(tpl_data.get("minutes", "")).strip()
+            for item in tpl_data.get("tasks", []):
+                if isinstance(item, dict) and item.get("title"):
+                    tasks_list.append({
+                        "title": str(item.get("title")).strip(),
+                        "description": item.get("description") or str(item.get("title")).strip(),
+                        "assignee_name": item.get("assignee") or item.get("assignee_name") or "Đơn vị phụ trách",
+                        "due_date": item.get("deadline") or item.get("due_date") or "Theo kế hoạch",
+                        "priority": item.get("priority", "Medium"),
+                    })
+        except Exception as tpl_err:
+            logger.warning("⚠️ Lỗi parse JSON Custom Template: %s", tpl_err)
+            final_minutes = gemini_tpl_raw
+            tasks_list = _parse_tasks_json(gemini_tpl_raw)
+
+        if not final_minutes:
+            final_minutes = section_2_text
+
+        elapsed = time.perf_counter() - start_time
+        return {
+            "minutes": final_minutes,
+            "tasks": tasks_list,
+            "_llm_processing_time_seconds": round(elapsed, 2),
+            "engine": "gemini",
+            "engine_used": "gemini",
+        }
 
     # 4. TARGETED PASS: Tạo Phần I, Phần III và Trích xuất Tasks JSON
     synthesis_prompt = f"""Dưới đây là toàn bộ diễn biến thảo luận chi tiết của cuộc họp:
 ---
 {section_2_text[:14000]}
----
+---{notes_block}
 
 Dựa trên toàn bộ diễn biến trên, hãy đóng vai Thư ký trưởng để:
 1. Soạn thảo PHẦN I: THÔNG TIN CHUNG & BỐI CẢNH ĐIỀU HÀNH (Thời gian, địa điểm, thành phần tham dự, chủ tọa điều hành, thư ký, mục tiêu và bối cảnh thực tiễn của cuộc họp).
@@ -1282,15 +1543,16 @@ def _run_transcription(file_path: str, meeting_id: int = 0) -> dict[str, Any]:
         "segments": segments,
         "duration": round(audio_duration, 2),
         "processing_time_seconds": round(elapsed, 2),
-        "engine": "local-whisper",
+        "engine": "local",
+        "engine_used": "local",
     }
 
 
 async def transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any]:
     """
     Entry point bóc băng âm thanh – Kiến trúc Hybrid Zero-503:
-      1. Nếu có GEMINI_API_KEY hợp lệ và preferred != 'local': Ưu tiên chạy Google Gemini API (nhanh, chuẩn 99%).
-      2. Nếu lỗi hoặc không có key: Tự động fallback sang Local Whisper an toàn tuyệt đối.
+      1. Nếu có GEMINI_API_KEY hợp lệ, có WiFi và preferred != 'local': Ưu tiên chạy Google Gemini API (nhanh, chuẩn 99%).
+      2. Nếu mất mạng hoặc không có key: Tự động fallback sang Local Whisper an toàn tuyệt đối.
     """
     audio_path = Path(file_path)
     if not audio_path.exists():
@@ -1310,13 +1572,14 @@ async def transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any
                 return gemini_res
             logger.warning("⚠️ Gemini trả về transcript rỗng, chuyển sang Local Whisper...")
         except Exception as gemini_err:
-            logger.warning(
-                "⚠️ [Hybrid Fallback] Google Gemini STT gặp lỗi (%s). Tự động hạ cấp sang Local Faster-Whisper...",
-                gemini_err,
-            )
+            logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama (%s)", gemini_err)
+            if meeting_id > 0:
+                update_progress(meeting_id, engine_used="local")
 
     # Chạy Local Faster-Whisper
     logger.info("💻 [Hybrid AI] Chạy bóc băng bằng Local Whisper...")
+    if meeting_id > 0:
+        update_progress(meeting_id, engine_used="local")
     loop = asyncio.get_running_loop()
     result = await loop.run_in_executor(
         _executor,
@@ -1332,6 +1595,9 @@ async def transcribe_audio(file_path: str, meeting_id: int = 0) -> dict[str, Any
             "Vui lòng kiểm tra chất lượng ghi âm."
         )
 
+    await _persist_partial_transcript_safe(meeting_id, result["text"])
+    result["engine"] = "local"
+    result["engine_used"] = "local"
     return result
 
 
@@ -1832,33 +2098,46 @@ def _run_llm_generation(transcript_text: str, meeting_id: int = 0) -> dict[str, 
     return result
 
 
-async def generate_minutes_and_tasks(text: str, meeting_id: int = 0) -> dict[str, Any]:
+async def generate_minutes_and_tasks(
+    text: str,
+    meeting_id: int = 0,
+    template_text: str | None = None,
+    secretary_notes: str | None = None,
+) -> dict[str, Any]:
     """
     Entry point tạo biên bản và trích xuất tasks – Kiến trúc Hybrid Zero-503:
-      1. Ưu tiên Google Gemini API (trích xuất cấu trúc 3 phần + tasks mảng 5-10 việc).
+      1. Ưu tiên Google Gemini API (trích xuất cấu trúc 3 phần + tasks mảng 5-10 việc, hoặc theo Custom Template .docx).
       2. Nếu không có key hoặc lỗi: Tự động fallback sang Local Ollama / Extractive Fallback.
       3. Tuyệt đối không bao giờ văng HTTP 503.
     """
     if not text or not text.strip():
         raise ValueError("Văn bản transcript không được rỗng.")
 
-    # Ưu tiên Google Gemini API nếu khả dụng
+    # Ưu tiên Google Gemini API nếu khả dụng và có kết nối Internet
     has_gemini = is_valid_gemini_key(_GEMINI_API_KEY)
-    if has_gemini and _PREFERRED_AI_ENGINE != "local":
+    if has_gemini and _PREFERRED_AI_ENGINE != "local" and check_internet_available(timeout_sec=1.5):
         try:
             logger.info("✨ [Hybrid AI] Đang tạo biên bản & trích xuất tasks bằng Google Gemini API...")
-            gemini_result = await _gemini_generate_minutes_and_tasks(text, meeting_id)
+            gemini_result = await _gemini_generate_minutes_and_tasks(
+                text,
+                meeting_id=meeting_id,
+                template_text=template_text,
+                secretary_notes=secretary_notes,
+            )
             if gemini_result.get("minutes", "").strip():
+                gemini_result["engine"] = "gemini"
+                gemini_result["engine_used"] = "gemini"
                 return gemini_result
             logger.warning("⚠️ Gemini trả về biên bản rỗng, chuyển sang Local Ollama...")
         except Exception as gemini_err:
-            logger.warning(
-                "⚠️ [Hybrid Fallback] Google Gemini tạo biên bản gặp lỗi (%s). Tự động hạ cấp sang Local Ollama...",
-                gemini_err,
-            )
+            logger.warning("No WiFi detected. Falling back to Local Whisper & Ollama (%s)", gemini_err)
+            if meeting_id > 0:
+                update_progress(meeting_id, engine_used="local")
 
     # Chạy Local Ollama
     logger.info("💻 [Hybrid AI] Chạy tạo biên bản bằng Local Ollama / Extractive...")
+    if meeting_id > 0:
+        update_progress(meeting_id, engine_used="local")
     loop = asyncio.get_running_loop()
     try:
         result = await asyncio.wait_for(
@@ -1880,6 +2159,8 @@ async def generate_minutes_and_tasks(text: str, meeting_id: int = 0) -> dict[str
             "_llm_processing_time_seconds": 0.0,
         }
 
+    result["engine"] = "local"
+    result["engine_used"] = "local"
     return result
 
 
@@ -1887,6 +2168,7 @@ async def rewrite_meeting_minutes_and_tasks(
     source_text: str,
     mode: str = "administrative",
     custom_instruction: str | None = None,
+    template_text: str | None = None,
 ) -> dict[str, Any]:
     """
     Biến đổi, tái cấu trúc văn bản cuộc họp theo nhiều phong cách chuyên nghiệp:
@@ -1895,7 +2177,7 @@ async def rewrite_meeting_minutes_and_tasks(
       - 'news_digest': Báo cáo / Bản tin Thời sự chia theo từng sự kiện trọng tâm
       - 'concise': Tóm tắt cô đọng 1 trang (Executive 1-Pager)
       - 'detailed': Phân tích chuyên sâu, toàn diện số liệu & phát biểu
-      - 'custom': Theo yêu cầu tùy chỉnh người dùng
+      - 'custom': Theo yêu cầu tùy chỉnh người dùng hoặc BIỂU MẪU MẪU (.docx)
     """
     start_time = time.perf_counter()
     if not source_text or not source_text.strip():
@@ -1948,11 +2230,26 @@ async def rewrite_meeting_minutes_and_tasks(
     if custom_instruction and mode_normalized != "custom":
         style_guide += f"\n\nLƯU Ý BỔ SUNG CỦA NGƯỜI DÙNG: {custom_instruction}"
 
-    system_instruction = (
-        "Bạn là chuyên gia biên tập và thư ký trưởng cao cấp cho các cơ quan, doanh nghiệp hàng đầu tại Việt Nam. "
-        "Nhiệm vụ của bạn là tái cấu trúc văn bản cuộc họp theo đúng định hướng phong cách được yêu cầu, "
-        "đồng thời trích xuất danh sách công việc/chỉ đạo hành động đầy đủ và chính xác."
-    )
+    if template_text and template_text.strip():
+        system_instruction = (
+            "Bạn là chuyên gia biên tập và thư ký trưởng cao cấp tại Việt Nam.\n"
+            "BẮT BUỘC viết biên bản tuân thủ CHÍNH XÁC 100% hệ thống đề mục (I, II, III...), "
+            "cách kẻ bảng và văn phong của BIỂU MẪU MẪU sau đây. "
+            "Trích xuất thông tin từ Bản gỡ băng để điền vào biểu mẫu này.\n\n"
+            f"=== BIỂU MẪU MẪU (.DOCX) ===\n{template_text.strip()}\n=== HẾT BIỂU MẪU MẪU ==="
+        )
+        style_guide = (
+            "BẮT BUỘC viết biên bản tuân thủ CHÍNH XÁC 100% hệ thống đề mục (I, II, III...), "
+            "cách kẻ bảng và văn phong của BIỂU MẪU MẪU đã cung cấp trong System Prompt. "
+            "Trích xuất toàn bộ dữ liệu thực tế từ Bản gỡ băng để điền đầy đủ vào biểu mẫu này."
+            + (f"\n\nYÊU CẦU BỔ SUNG: {custom_instruction}" if custom_instruction else "")
+        )
+    else:
+        system_instruction = (
+            "Bạn là chuyên gia biên tập và thư ký trưởng cao cấp cho các cơ quan, doanh nghiệp hàng đầu tại Việt Nam. "
+            "Nhiệm vụ của bạn là tái cấu trúc văn bản cuộc họp theo đúng định hướng phong cách được yêu cầu, "
+            "đồng thời trích xuất danh sách công việc/chỉ đạo hành động đầy đủ và chính xác."
+        )
 
     user_prompt = f"""Dưới đây là văn bản nội dung cuộc họp / bản gỡ băng:
 ---
@@ -2155,4 +2452,211 @@ Hãy trả lời câu hỏi trên một cách chính xác, mạch lạc và bám
         "answer": answer_text,
         "engine": engine_used,
     }
+
+
+# ===========================================================================
+# BACKGROUND PIPELINE ORCHESTRATOR (ANTI-TIMEOUT ASYNC ARCHITECTURE)
+# ===========================================================================
+async def process_audio_pipeline(
+    meeting_id: int,
+    save_path_str: str,
+    relative_url: str,
+    file_size: int = 0,
+    secretary_notes: str | None = None,
+    template_text: str | None = None,
+) -> None:
+    """
+    Tiến trình xử lý nền hoàn chỉnh cho file ghi âm dài (50-120 phút),
+    được kích hoạt bởi FastAPI BackgroundTasks sau khi API đã trả HTTP 202 Accepted.
+    Cập nhật liên tục PROGRESS_STORE ('transcribing' -> 'synthesizing' -> 'completed'/'failed')
+    và lưu an toàn từng bước vào SQLite bằng session độc lập.
+    """
+    from app.core.database import async_session_maker
+    from app.models.models import Meeting, MeetingStatus, Task, TaskStatus
+
+    pipeline_start = time.perf_counter()
+    logger.info(
+        "🚀 [Background Pipeline] Khởi chạy xử lý ngầm cho meeting_id=%d (%d KB)",
+        meeting_id,
+        file_size // 1024,
+    )
+
+    update_progress(
+        meeting_id,
+        status="transcribing",
+        progress_percent=6,
+        current_step_detail="Đang bóc băng âm thanh (có thể mất 1-3 phút)...",
+    )
+
+    async with async_session_maker() as db:
+        meeting = await db.get(Meeting, meeting_id)
+        if meeting is None:
+            logger.error("❌ [Background Pipeline] Không tìm thấy meeting_id=%d trong DB.", meeting_id)
+            update_progress(
+                meeting_id,
+                status="failed",
+                progress_percent=0,
+                current_step_detail=f"Không tìm thấy cuộc họp ID={meeting_id}.",
+            )
+            return
+
+        # BƯỚC 1: Bóc băng âm thanh (STT - Multi-chunk PyAV + Gemini / Local Whisper)
+        try:
+            transcription_result = await transcribe_audio(
+                save_path_str,
+                meeting_id=meeting_id,
+            )
+            raw_transcript = transcription_result.get("text", "").strip()
+            if not raw_transcript:
+                raise ValueError("Không nhận diện được giọng nói tiếng Việt trong tệp âm thanh.")
+            stt_engine = transcription_result.get("engine_used") or (
+                "local" if "local" in str(transcription_result.get("engine", "")) else "gemini"
+            )
+        except Exception as stt_exc:
+            err_msg = str(stt_exc)
+            logger.error("❌ [Background Pipeline] Lỗi STT meeting_id=%d: %s", meeting_id, err_msg, exc_info=True)
+            try:
+                await db.refresh(meeting)
+                saved_partial = PROGRESS_STORE.get(meeting_id, {}).get("partial_transcript", "")
+                if saved_partial and not meeting.raw_transcript:
+                    meeting.raw_transcript = saved_partial
+                meeting.status = MeetingStatus.FAILED
+                meeting.final_minutes = f"[PIPELINE FAILED] {err_msg}"
+                await db.flush()
+                await db.commit()
+            except Exception:
+                await db.rollback()
+            update_progress(
+                meeting_id,
+                status="failed",
+                progress_percent=0,
+                current_step_detail=f"Lỗi bóc băng âm thanh: {err_msg}",
+            )
+            return
+
+        # Lưu raw_transcript ngay lập tức vào SQLite
+        try:
+            meeting.raw_transcript = raw_transcript
+            meeting.audio_file_url = relative_url
+            await db.flush()
+            await db.commit()
+            logger.info("💾 [Background Pipeline] Đã lưu raw_transcript (%d ký tự) cho meeting %d", len(raw_transcript), meeting_id)
+        except Exception as db_exc:
+            await db.rollback()
+            logger.warning("⚠️ [Background Pipeline] Lỗi lưu raw_transcript: %s", db_exc)
+
+        # BƯỚC 2: Tổng hợp Biên bản & Trích xuất Nhiệm vụ (Fabric Sliding-Window Map-Reduce)
+        update_progress(
+            meeting_id,
+            status="synthesizing",
+            progress_percent=62,
+            current_step_detail="Đang tổng hợp biên bản...",
+            engine_used=stt_engine,
+        )
+
+        minutes_text = ""
+        extracted_tasks_raw: list[dict[str, Any]] = []
+        llm_engine = stt_engine
+
+        try:
+            llm_result = await generate_minutes_and_tasks(
+                raw_transcript,
+                meeting_id=meeting_id,
+                template_text=template_text,
+                secretary_notes=secretary_notes,
+            )
+            minutes_text = llm_result.get("minutes", "")
+            extracted_tasks_raw = llm_result.get("tasks", [])
+            llm_engine = llm_result.get("engine_used") or (
+                "local" if "local" in str(llm_result.get("engine", "")) else "gemini"
+            )
+        except Exception as llm_exc:
+            logger.warning("⚠️ [Background Pipeline] Lỗi tổng hợp LLM (%s). Kích hoạt Extractive Fallback...", llm_exc)
+            chunks = _chunk_transcript(raw_transcript)
+            summaries = [
+                f"### Phần {i + 1}/{len(chunks)}:\n{_extractive_chunk_summary(c)}"
+                for i, c in enumerate(chunks)
+            ]
+            minutes_text = _format_fallback_minutes(summaries, raw_transcript)
+            extracted_tasks_raw = _rule_based_task_extractor(raw_transcript)
+            llm_engine = "local"
+
+        engine_used = "local" if (stt_engine == "local" or llm_engine == "local") else "gemini"
+
+        # BƯỚC 3: Lưu biên bản + tasks & đánh dấu COMPLETED trong DB
+        update_progress(
+            meeting_id,
+            status="synthesizing",
+            progress_percent=96,
+            current_step_detail="Đang lưu biên bản và danh sách công việc vào database...",
+            engine_used=engine_used,
+        )
+
+        try:
+            meeting.final_minutes = minutes_text
+            meeting.status = MeetingStatus.COMPLETED
+            await db.flush()
+            await db.commit()
+        except Exception as final_db_exc:
+            await db.rollback()
+            logger.error("❌ [Background Pipeline] Lỗi commit final_minutes: %s", final_db_exc, exc_info=True)
+
+        saved_tasks = 0
+        for task_data in extracted_tasks_raw:
+            if not isinstance(task_data, dict) or not task_data.get("title"):
+                continue
+            try:
+                t_title = str(task_data.get("title")).strip()
+                t_desc = str(task_data.get("description") or "").strip()
+                t_assignee = task_data.get("assignee_name") or task_data.get("assignee")
+                t_due = task_data.get("due_date") or task_data.get("deadline")
+
+                extras = []
+                if t_assignee:
+                    extras.append(f"Phụ trách: {t_assignee}")
+                if t_due:
+                    extras.append(f"Thời hạn: {t_due}")
+                if extras:
+                    extra_str = " | ".join(extras)
+                    t_desc = f"[{extra_str}] {t_desc}" if t_desc else f"[{extra_str}]"
+
+                db.add(
+                    Task(
+                        meeting_id=meeting_id,
+                        assignee_id=None,
+                        title=t_title,
+                        description=t_desc or None,
+                        status=TaskStatus.PENDING,
+                        due_date=None,
+                    )
+                )
+                saved_tasks += 1
+            except Exception as t_exc:
+                logger.warning("⚠️ Bỏ qua task không hợp lệ: %s", t_exc)
+
+        if saved_tasks > 0:
+            try:
+                await db.flush()
+                await db.commit()
+            except Exception as t_commit_exc:
+                await db.rollback()
+                logger.error("❌ Lỗi commit tasks: %s", t_commit_exc)
+
+        total_elapsed = time.perf_counter() - pipeline_start
+        update_progress(
+            meeting_id,
+            status="completed",
+            progress_percent=100,
+            current_step_detail=f"Hoàn tất! Xử lý ngầm thành công trong {total_elapsed:.0f} giây.",
+            engine_used=engine_used,
+        )
+        logger.info(
+            "🎉 [Background Pipeline] Hoàn tất meeting_id=%d trong %.2fs | Biên bản: %d ký tự | Tasks: %d | Engine: %s",
+            meeting_id,
+            total_elapsed,
+            len(minutes_text),
+            saved_tasks,
+            engine_used,
+        )
+
 

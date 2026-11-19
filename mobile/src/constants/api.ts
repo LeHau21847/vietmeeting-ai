@@ -110,11 +110,11 @@ export const API_ENDPOINTS = {
     `${BASE_URL}/api/v1/meetings/${meetingId}/ask`,
 } as const;
 
-/** Timeout dài cho AI processing (15 phút – file 1 tiếng) */
-export const API_TIMEOUT_MS = 15 * 60 * 1000;
+/** Timeout mặc định 5 phút (300000ms) cho các route AI Rewrite / Upload / Fallback */
+export const API_TIMEOUT_MS = 300000;
 
 /** Timeout ngắn cho các request thông thường (không phải AI) */
 export const API_TIMEOUT_SHORT_MS = 15 * 1000;
 
-/** Interval polling progress (1.5 giây) */
-export const PROGRESS_POLL_INTERVAL_MS = 1500;
+/** Interval polling progress & trạng thái cuộc họp (3 giây - Anti-Timeout Async) */
+export const PROGRESS_POLL_INTERVAL_MS = 3000;

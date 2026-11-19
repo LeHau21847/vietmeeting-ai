@@ -14,7 +14,7 @@ from __future__ import annotations
 import logging
 import re
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response, status
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +33,7 @@ from app.schemas.schemas import (
 )
 from app.services.ai_service import (
     ask_meeting_assistant,
+    extract_text_from_docx,
     rewrite_meeting_minutes_and_tasks,
 )
 
@@ -317,10 +318,46 @@ async def update_meeting(
 )
 async def ai_rewrite_meeting(
     meeting_id: int,
-    body: AIRewriteRequest,
+    request: Request,
     db: AsyncSession = Depends(get_db),
 ) -> MeetingRead:
     try:
+        # Hỗ trợ linh hoạt cả application/json lẫn multipart/form-data (đính kèm biểu mẫu .docx)
+        content_type = (request.headers.get("content-type") or "").lower()
+        mode = "administrative"
+        custom_instruction: str | None = None
+        template_text: str | None = None
+
+        if "multipart/form-data" in content_type:
+            form = await request.form()
+            mode = str(form.get("mode") or "custom").strip() or "custom"
+            raw_instr = form.get("custom_instruction")
+            custom_instruction = str(raw_instr).strip() if raw_instr else None
+            uploaded_tpl = form.get("template_file")
+            if uploaded_tpl is not None and hasattr(uploaded_tpl, "read"):
+                tpl_filename = getattr(uploaded_tpl, "filename", "") or ""
+                if tpl_filename and not tpl_filename.lower().endswith(".docx"):
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "error": "invalid_template_type",
+                            "message": "Biểu mẫu tùy chỉnh bắt buộc phải có định dạng .docx (Microsoft Word).",
+                        },
+                    )
+                tpl_bytes = await uploaded_tpl.read()
+                if tpl_bytes:
+                    template_text = extract_text_from_docx(tpl_bytes)
+                    logger.info(
+                        "📄 [Custom Template Learner] Đã trích xuất biểu mẫu '%s' (%d ký tự).",
+                        tpl_filename,
+                        len(template_text),
+                    )
+        else:
+            raw_json = await request.json()
+            parsed_body = AIRewriteRequest(**raw_json)
+            mode = parsed_body.mode
+            custom_instruction = parsed_body.custom_instruction
+
         stmt = (
             select(Meeting)
             .options(selectinload(Meeting.tasks))
@@ -346,15 +383,17 @@ async def ai_rewrite_meeting(
             )
 
         logger.info(
-            "✨ [AI Rewrite API] Bắt đầu tái cấu trúc meeting %d với mode='%s'",
+            "✨ [AI Rewrite API] Bắt đầu tái cấu trúc meeting %d với mode='%s' | custom_template=%s",
             meeting_id,
-            body.mode,
+            mode,
+            bool(template_text),
         )
 
         rewrite_result = await rewrite_meeting_minutes_and_tasks(
             source_text=source_text,
-            mode=body.mode,
-            custom_instruction=body.custom_instruction,
+            mode=mode,
+            custom_instruction=custom_instruction,
+            template_text=template_text,
         )
 
         new_minutes = rewrite_result.get("minutes", "")
@@ -392,6 +431,7 @@ async def ai_rewrite_meeting(
     except HTTPException:
         raise
     except Exception as exc:
+        await db.rollback()
         logger.error("❌ Lỗi AI rewrite meeting %d: %s", meeting_id, str(exc), exc_info=True)
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,

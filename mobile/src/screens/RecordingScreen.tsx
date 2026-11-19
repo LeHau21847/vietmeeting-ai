@@ -49,6 +49,8 @@ import {
   PROGRESS_POLL_INTERVAL_MS,
 } from "@/constants/api";
 import { AIEngineBadge, AIConfigModal } from "@/components/AIConfigModal";
+import { showToast } from "@/components/VercelToast";
+import { ShimmerProgressBar, ShimmerStatusPill } from "@/components/VercelUI";
 import type {
   AIProcessingResult,
   AIRewriteMode,
@@ -120,8 +122,9 @@ export default function RecordingScreen(): React.JSX.Element {
   // Active Result Tab: "minutes" | "tasks" | "transcript" | "copilot"
   const [activeTab, setActiveTab] = useState<"minutes" | "tasks" | "transcript" | "copilot">("minutes");
 
-  // Modal cấu hình AI
+  // Modal cấu hình AI & trạng thái Engine thực tế ("gemini" | "local")
   const [aiConfigModalVisible, setAiConfigModalVisible] = useState(false);
+  const [engineUsed, setEngineUsed] = useState<"gemini" | "local" | null>(null);
 
   // Refs
   const recordingRef = useRef<Audio.Recording | null>(null);
@@ -167,32 +170,96 @@ export default function RecordingScreen(): React.JSX.Element {
     ]).start();
   }, [fadeAnim, slideAnim]);
 
-  // Progress Polling
-  const startProgressPolling = useCallback(() => {
-    stopProgressPolling();
-    progressPollRef.current = setInterval(async () => {
-      try {
-        const res = await axios.get<ProgressData>(
-          API_ENDPOINTS.getProgress(meetingId),
-          { timeout: 5000 }
-        );
-        setProgressData(res.data);
-
-        if (res.data.status === "completed" || res.data.status === "failed") {
-          stopProgressPolling();
-        }
-      } catch {
-        // Silently ignore polling errors
-      }
-    }, PROGRESS_POLL_INTERVAL_MS);
-  }, [meetingId]);
-
   const stopProgressPolling = useCallback(() => {
     if (progressPollRef.current) {
       clearInterval(progressPollRef.current);
       progressPollRef.current = null;
     }
   }, []);
+
+  // Anti-Timeout Async Polling (mỗi 3 giây kiểm tra GET /meetings/{id}/progress & GET /meetings/{id})
+  const startProgressPolling = useCallback(() => {
+    stopProgressPolling();
+    const pollOnce = async () => {
+      try {
+        const [progRes, meetingRes] = await Promise.allSettled([
+          axios.get<ProgressData>(API_ENDPOINTS.getProgress(meetingId), { timeout: 8000 }),
+          axios.get<MeetingRead>(API_ENDPOINTS.getMeeting(meetingId), { timeout: 8000 }),
+        ]);
+
+        let currentEngine: "gemini" | "local" = "gemini";
+
+        if (progRes.status === "fulfilled" && progRes.value.data) {
+          const pData = progRes.value.data;
+          setProgressData(pData);
+          if (pData.engine_used === "local") {
+            currentEngine = "local";
+            setEngineUsed((prev) => {
+              if (prev !== "local") {
+                showToast({
+                  title: "Mất kết nối Internet - Chuyển sang Local AI",
+                  description: "Hệ thống tự động định tuyến sang Faster-Whisper & Ollama nội bộ.",
+                  type: "offline",
+                });
+              }
+              return "local";
+            });
+          } else if (pData.engine_used === "gemini") {
+            setEngineUsed("gemini");
+          }
+        }
+
+        if (meetingRes.status === "fulfilled" && meetingRes.value.data) {
+          const meeting = meetingRes.value.data;
+          if (meeting.status === "completed") {
+            stopProgressPolling();
+            const finalResult: AIProcessingResult = {
+              meeting_id: meeting.id,
+              audio_file_url: meeting.audio_file_url ?? "",
+              raw_transcript: meeting.raw_transcript ?? "",
+              minutes: meeting.final_minutes ?? "",
+              engine_used: currentEngine,
+              tasks: (meeting.tasks ?? []).map((t) => ({
+                title: t.title,
+                description: t.description ?? null,
+                assignee_name: null,
+                due_date: null,
+                id: t.id,
+                status: t.status,
+              })),
+              processing_metadata: { engine_used: currentEngine },
+            };
+            setResult(finalResult);
+            setScreenState("success");
+            animateResultIn();
+            showToast({
+              title: "Đã hoàn tất bóc băng & lập biên bản cuộc họp",
+              description: `${finalResult.tasks.length} nhiệm vụ đã được trích xuất và lưu an toàn.`,
+              type: "success",
+            });
+            return;
+          }
+
+          if (meeting.status === "failed") {
+            stopProgressPolling();
+            const failDetail =
+              (progRes.status === "fulfilled" && progRes.value.data?.current_step_detail) ||
+              meeting.final_minutes?.replace("[PIPELINE FAILED]", "").trim() ||
+              "Không thể hoàn tất xử lý âm thanh. Vui lòng thử lại.";
+            setErrorMessage("Xử lý tệp âm thanh không thành công.");
+            setErrorDetail(failDetail);
+            setScreenState("error");
+            return;
+          }
+        }
+      } catch {
+        // Bỏ qua lỗi mạng tạm thời trong lúc polling — không dừng vòng lặp
+      }
+    };
+
+    pollOnce();
+    progressPollRef.current = setInterval(pollOnce, PROGRESS_POLL_INTERVAL_MS);
+  }, [animateResultIn, meetingId, stopProgressPolling]);
 
   // Load history if meeting is already completed
   useEffect(() => {
@@ -394,9 +461,14 @@ export default function RecordingScreen(): React.JSX.Element {
           setResult(null);
           setErrorMessage("");
           setErrorDetail("");
-          setProgressData(null);
+          setProgressData({
+            meeting_id: meetingId,
+            status: "uploading",
+            progress_percent: 3,
+            current_step_detail: "Đang tải tệp âm thanh lên máy chủ...",
+            partial_transcript: "",
+          });
           setScreenState("processing");
-          startProgressPolling();
 
           try {
             const formData = new FormData();
@@ -405,13 +477,37 @@ export default function RecordingScreen(): React.JSX.Element {
               formData.append("notes", secretaryNotes.trim());
             }
             const endpoint = API_ENDPOINTS.processAudio(meetingId);
-            const response = await axios.post<AIProcessingResult>(endpoint, formData, {
+            const response = await axios.post<any>(endpoint, formData, {
               timeout: API_TIMEOUT_MS,
             });
-            stopProgressPolling();
-            setResult(response.data);
-            setScreenState("success");
-            animateResultIn();
+
+            // Anti-Timeout Async Mode (HTTP 202 Accepted): Không chờ đồng bộ, chạy Polling mỗi 3s
+            if (response.status === 202 || response.data?.status === "processing") {
+              setProgressData({
+                meeting_id: meetingId,
+                status: "transcribing",
+                progress_percent: 6,
+                current_step_detail: "Đang bóc băng âm thanh (có thể mất 1-3 phút)...",
+                partial_transcript: "",
+              });
+              showToast({
+                title: "Đã tiếp nhận tệp âm thanh — Đang xử lý ngầm",
+                description: "Tiến trình chạy nền chống Timeout. Giao diện sẽ tự cập nhật khi hoàn tất.",
+                type: "info",
+              });
+              startProgressPolling();
+            } else {
+              // Tương thích ngược nếu server trả 200 OK đồng bộ
+              stopProgressPolling();
+              const usedEng =
+                response.data?.engine_used ||
+                response.data?.processing_metadata?.engine_used ||
+                "gemini";
+              setEngineUsed(usedEng);
+              setResult(response.data);
+              setScreenState("success");
+              animateResultIn();
+            }
           } catch (err) {
             stopProgressPolling();
             handleUploadError(err);
@@ -429,7 +525,7 @@ export default function RecordingScreen(): React.JSX.Element {
     }
   };
 
-  // Upload to API
+  // Upload to API (Anti-Timeout 202 Accepted + Polling)
   const uploadAudioToAPI = async (audioUri: string, filename: string): Promise<void> => {
     try {
       const formData = new FormData();
@@ -452,15 +548,36 @@ export default function RecordingScreen(): React.JSX.Element {
       }
 
       const endpoint = API_ENDPOINTS.processAudio(meetingId);
-      const response = await axios.post<AIProcessingResult>(endpoint, formData, {
+      const response = await axios.post<any>(endpoint, formData, {
         headers: { "Content-Type": "multipart/form-data" },
         timeout: API_TIMEOUT_MS,
       });
 
-      stopProgressPolling();
-      setResult(response.data);
-      setScreenState("success");
-      animateResultIn();
+      if (response.status === 202 || response.data?.status === "processing") {
+        setProgressData({
+          meeting_id: meetingId,
+          status: "transcribing",
+          progress_percent: 6,
+          current_step_detail: "Đang bóc băng âm thanh (có thể mất 1-3 phút)...",
+          partial_transcript: "",
+        });
+        showToast({
+          title: "Đã tiếp nhận bản ghi âm — Đang xử lý ngầm",
+          description: "Hệ thống đang bóc băng & tổng hợp biên bản tự động.",
+          type: "info",
+        });
+        startProgressPolling();
+      } else {
+        stopProgressPolling();
+        const usedEng =
+          response.data?.engine_used ||
+          response.data?.processing_metadata?.engine_used ||
+          "gemini";
+        setEngineUsed(usedEng);
+        setResult(response.data);
+        setScreenState("success");
+        animateResultIn();
+      }
     } catch (error) {
       stopProgressPolling();
       handleUploadError(error);
@@ -588,7 +705,10 @@ export default function RecordingScreen(): React.JSX.Element {
           </View>
 
           <View style={s.navRight}>
-            <AIEngineBadge onPress={() => setAiConfigModalVisible(true)} />
+            <AIEngineBadge
+              onPress={() => setAiConfigModalVisible(true)}
+              engineOverride={engineUsed}
+            />
 
             <View style={[
               s.statusPill,
@@ -1281,29 +1401,52 @@ function WaveBar({ index }: { index: number }): React.JSX.Element {
 // SUB-COMPONENT: LiveProcessingView (Technical Stepper)
 // ===========================================================================
 function LiveProcessingView({ progressData }: { progressData: ProgressData | null }): React.JSX.Element {
-  const percent = progressData?.progress_percent ?? 0;
-  const stepDetail = progressData?.current_step_detail ?? "Đang thiết lập kết nối với AI engine...";
-  const partialTranscript = progressData?.partial_transcript ?? "";
+  const percent = progressData?.progress_percent ?? 5;
   const status = progressData?.status ?? "uploading";
+  const partialTranscript = progressData?.partial_transcript ?? "";
+  const isLocalEngine = progressData?.engine_used === "local";
 
   const isTranscribing = status === "transcribing" || (percent >= 5 && percent < 60);
-  const isSummarizing = status === "summarizing" || (percent >= 60 && percent < 100);
+  const isSummarizing =
+    status === "synthesizing" || status === "summarizing" || (percent >= 60 && percent < 100);
   const isCompleted = status === "completed";
+
+  const defaultDetail = isSummarizing
+    ? "Đang tổng hợp biên bản..."
+    : isTranscribing
+    ? "Đang bóc băng âm thanh (có thể mất 1-3 phút)..."
+    : "Đang truyền tệp âm thanh lên hệ thống xử lý nền...";
+  const stepDetail = progressData?.current_step_detail || defaultDetail;
 
   return (
     <View style={procStyles.container}>
       <View style={procStyles.metricRow}>
         <View style={procStyles.headerLeft}>
-          <Text style={procStyles.title}>Tiến trình Xử lý AI</Text>
+          <View style={{ flexDirection: "row", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            <Text style={procStyles.title}>Tiến trình Xử lý AI (Chạy nền)</Text>
+            <ShimmerStatusPill
+              label={
+                isLocalEngine
+                  ? "Chế độ Ngoại tuyến (Local Whisper & Ollama)"
+                  : isSummarizing
+                  ? "Đang tổng hợp biên bản..."
+                  : "Đang bóc băng âm thanh (có thể mất 1-3 phút)..."
+              }
+              isOffline={isLocalEngine}
+            />
+          </View>
           <Text style={procStyles.detail}>{stepDetail}</Text>
         </View>
         <Text style={procStyles.percentText}>{percent}%</Text>
       </View>
 
-      {/* Thin Technical Progress Bar */}
-      <View style={procStyles.progressBarBg}>
-        <View style={[procStyles.progressBarFill, { width: `${Math.min(percent, 100)}%` }]} />
-      </View>
+      {/* Shimmer Progress Bar chuẩn Vercel Design System */}
+      <ShimmerProgressBar
+        progress={percent}
+        accentColor={isLocalEngine ? "#F59E0B" : "#2563EB"}
+        trackColor="#1A1D26"
+        height={8}
+      />
 
       {/* Stepper list */}
       <View style={procStyles.stepList}>
@@ -1405,10 +1548,13 @@ function ResultDashboard({
   const [textAlign, setTextAlign] = useState<TextAlignType>("justify");
   const [paperTheme, setPaperTheme] = useState<PaperThemeType>("white");
 
-  // AI Text Studio States
+  // AI Text Studio States & Custom Template Learner (.docx)
   const [aiRewriteLoading, setAiRewriteLoading] = useState(false);
   const [aiPromptInput, setAiPromptInput] = useState("");
   const [aiActiveMode, setAiActiveMode] = useState<AIRewriteMode | null>(null);
+  const [customTemplateFile, setCustomTemplateFile] = useState<File | null>(null);
+  const [customTemplateName, setCustomTemplateName] = useState<string>("");
+  const templateInputRef = useRef<HTMLInputElement | null>(null);
 
   // Transcript Editing & Search States
   const [transcriptContent, setTranscriptContent] = useState(result.raw_transcript || "");
@@ -1615,6 +1761,10 @@ function ResultDashboard({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+    showToast({
+      title: "Đã sao chép nội dung vào bộ nhớ đệm",
+      type: "success",
+    });
   };
 
   const handleSaveToDB = async () => {
@@ -1630,8 +1780,17 @@ function ResultDashboard({
       );
       setSavedToast(true);
       setTimeout(() => setSavedToast(false), 2500);
+      showToast({
+        title: "Đã lưu biên bản cuộc họp thành công",
+        description: docTitle,
+        type: "success",
+      });
     } catch {
-      Alert.alert("Lỗi", "Không thể lưu biên bản lên máy chủ. Vui lòng thử lại.");
+      showToast({
+        title: "Không thể lưu biên bản lên máy chủ",
+        description: "Vui lòng kiểm tra kết nối máy chủ và thử lại.",
+        type: "error",
+      });
     } finally {
       setIsSaving(false);
     }
@@ -1648,8 +1807,15 @@ function ResultDashboard({
       setSavedTranscriptToast(true);
       setTimeout(() => setSavedTranscriptToast(false), 2500);
       setIsEditingTranscript(false);
+      showToast({
+        title: "Đã lưu chỉnh sửa bản gỡ băng gốc",
+        type: "success",
+      });
     } catch {
-      Alert.alert("Lỗi", "Không thể lưu bản gỡ băng lên máy chủ.");
+      showToast({
+        title: "Không thể lưu bản gỡ băng lên máy chủ",
+        type: "error",
+      });
     } finally {
       setIsSavingTranscript(false);
     }
@@ -1679,19 +1845,79 @@ function ResultDashboard({
     }
   };
 
+  // Chọn tệp biểu mẫu Word (.docx) tùy chỉnh của công ty/cơ quan
+  const handlePickTemplateDocx = () => {
+    if (Platform.OS !== "web") {
+      showToast({
+        title: "Hỗ trợ tải biểu mẫu (.DOCX) trên trình duyệt Web",
+        type: "info",
+      });
+      return;
+    }
+    if (!templateInputRef.current) {
+      const input = document.createElement("input");
+      input.type = "file";
+      input.accept = ".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document";
+      input.style.display = "none";
+      document.body.appendChild(input);
+      templateInputRef.current = input;
+      input.onchange = (e) => {
+        const picked = (e.target as HTMLInputElement).files?.[0];
+        if (!picked) return;
+        if (!picked.name.toLowerCase().endsWith(".docx")) {
+          showToast({
+            title: "Định dạng không hợp lệ",
+            description: "Vui lòng chọn tệp biểu mẫu Word có đuôi .docx.",
+            type: "error",
+          });
+          input.value = "";
+          return;
+        }
+        setCustomTemplateFile(picked);
+        setCustomTemplateName(picked.name);
+        showToast({
+          title: "Đã đính kèm biểu mẫu riêng (.DOCX)",
+          description: `${picked.name} — Bấm "Thực hiện" để AI viết lại theo đúng cấu trúc biểu mẫu.`,
+          type: "success",
+        });
+        input.value = "";
+      };
+    }
+    templateInputRef.current.click();
+  };
+
   const handleAIRewrite = async (mode: AIRewriteMode, customPrompt?: string) => {
     if (aiRewriteLoading) return;
     setAiRewriteLoading(true);
     setAiActiveMode(mode);
     try {
-      const res = await axios.post<MeetingRead>(
-        API_ENDPOINTS.aiRewrite(meetingId),
-        {
-          mode,
-          custom_instruction: customPrompt || (mode === "custom" ? aiPromptInput.trim() : undefined),
-        },
-        { timeout: 90000 }
-      );
+      let res;
+      const instructionVal = customPrompt || (mode === "custom" ? aiPromptInput.trim() : "");
+
+      if (customTemplateFile) {
+        // Gửi kèm tệp biểu mẫu .docx qua FormData để Backend học 100% cấu trúc biểu mẫu
+        const formData = new FormData();
+        formData.append("mode", mode);
+        if (instructionVal) {
+          formData.append("custom_instruction", instructionVal);
+        }
+        formData.append("template_file", customTemplateFile, customTemplateFile.name);
+        res = await axios.post<MeetingRead>(
+          API_ENDPOINTS.aiRewrite(meetingId),
+          formData,
+          { timeout: API_TIMEOUT_MS }
+        );
+      } else {
+        res = await axios.post<MeetingRead>(
+          API_ENDPOINTS.aiRewrite(meetingId),
+          {
+            mode,
+            custom_instruction: instructionVal || undefined,
+          },
+          { timeout: API_TIMEOUT_MS }
+        );
+      }
+
       const updated = res.data;
       if (updated.final_minutes) {
         setMinutesContent(updated.final_minutes);
@@ -1716,10 +1942,20 @@ function ResultDashboard({
       if (mode === "custom") {
         setAiPromptInput("");
       }
-      Alert.alert("Thông báo", "Biên bản và bảng phân công nhiệm vụ đã được tái cấu trúc thành công.");
+      showToast({
+        title: customTemplateFile
+          ? "Đã tái cấu trúc biên bản theo đúng biểu mẫu riêng (.DOCX)"
+          : "Đã tái cấu trúc biên bản & phân công nhiệm vụ",
+        description: customTemplateFile ? customTemplateName : undefined,
+        type: "success",
+      });
     } catch (err: any) {
       const msg = err.response?.data?.detail || "Không thể thực hiện tái cấu trúc AI. Vui lòng kiểm tra lại.";
-      Alert.alert("Lỗi AI Studio", typeof msg === "string" ? msg : JSON.stringify(msg));
+      showToast({
+        title: "Lỗi AI Studio",
+        description: typeof msg === "string" ? msg : JSON.stringify(msg),
+        type: "error",
+      });
     } finally {
       setAiRewriteLoading(false);
       setAiActiveMode(null);
@@ -2028,6 +2264,11 @@ function ResultDashboard({
         link.click();
         document.body.removeChild(link);
         URL.revokeObjectURL(url);
+        showToast({
+          title: "Đã xuất tệp Word (.doc) chuẩn Nghị định 30",
+          description: fileName,
+          type: "success",
+        });
       } catch {
         window.open(exportDocUrl, "_blank");
       }
@@ -2271,22 +2512,115 @@ function ResultDashboard({
         })}
       </View>
 
+      {/* Custom Template Learner (.DOCX) Bar */}
+      <View style={{
+        flexDirection: "row",
+        alignItems: "center",
+        flexWrap: "wrap",
+        gap: 8,
+        marginTop: 8,
+        paddingTop: 8,
+        borderTopWidth: 1,
+        borderTopColor: "#262932",
+      }}>
+        <Pressable
+          onPress={handlePickTemplateDocx}
+          disabled={aiRewriteLoading}
+          style={({ pressed }) => [
+            {
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              paddingHorizontal: 11,
+              paddingVertical: 6,
+              borderRadius: 7,
+              backgroundColor: customTemplateFile
+                ? "rgba(16, 185, 129, 0.12)"
+                : "rgba(37, 99, 235, 0.1)",
+              borderWidth: 1,
+              borderColor: customTemplateFile
+                ? "rgba(16, 185, 129, 0.35)"
+                : "rgba(37, 99, 235, 0.3)",
+            },
+            pressed && resStyles.btnPressed,
+          ]}
+        >
+          <Feather
+            name="upload-cloud"
+            size={14}
+            color={customTemplateFile ? "#10B981" : "#3B82F6"}
+          />
+          <Text
+            style={{
+              fontSize: 12,
+              fontWeight: "600",
+              color: customTemplateFile ? "#10B981" : "#60A5FA",
+            }}
+          >
+            Tải lên Biểu mẫu riêng (.DOCX)
+          </Text>
+        </Pressable>
+
+        {customTemplateName ? (
+          <View
+            style={{
+              flexDirection: "row",
+              alignItems: "center",
+              gap: 6,
+              paddingHorizontal: 10,
+              paddingVertical: 5,
+              borderRadius: 7,
+              backgroundColor: "#111318",
+              borderWidth: 1,
+              borderColor: "#2D323E",
+              maxWidth: 320,
+            }}
+          >
+            <Feather name="file-text" size={12} color="#10B981" />
+            <Text
+              style={{ color: "#E2E8F0", fontSize: 11.5, fontWeight: "500" }}
+              numberOfLines={1}
+            >
+              {customTemplateName}
+            </Text>
+            <Pressable
+              onPress={() => {
+                setCustomTemplateFile(null);
+                setCustomTemplateName("");
+              }}
+              hitSlop={6}
+              accessibilityLabel="Gỡ biểu mẫu riêng"
+            >
+              <Feather name="x" size={13} color="#94A3B8" />
+            </Pressable>
+          </View>
+        ) : (
+          <Text style={{ fontSize: 11, color: "#64748B" }}>
+            AI sẽ bắt chước 100% đề mục (I, II, III...), bảng biểu và văn phong từ file Word mẫu.
+          </Text>
+        )}
+      </View>
+
       {/* Custom Prompt Input */}
       <View style={resStyles.aiPromptBar}>
         <TextInput
           value={aiPromptInput}
           onChangeText={setAiPromptInput}
-          placeholder="Nhập yêu cầu tùy chỉnh cho AI (VD: Làm rõ các số liệu ngân sách, tổng hợp quyết định quan trọng...)"
+          placeholder={
+            customTemplateFile
+              ? "Tùy chọn: Ghi chú thêm khi điền vào biểu mẫu riêng (hoặc bấm Thực hiện ngay)..."
+              : "Nhập yêu cầu tùy chỉnh cho AI (VD: Làm rõ các số liệu ngân sách, tổng hợp quyết định quan trọng...)"
+          }
           placeholderTextColor="#64748B"
           style={resStyles.aiPromptInput}
           editable={!aiRewriteLoading}
         />
         <Pressable
           onPress={() => handleAIRewrite("custom")}
-          disabled={aiRewriteLoading || !aiPromptInput.trim()}
+          disabled={aiRewriteLoading || (!aiPromptInput.trim() && !customTemplateFile)}
           style={({ pressed }) => [
             resStyles.aiPromptSubmitBtn,
-            (!aiPromptInput.trim() || aiRewriteLoading) && { opacity: 0.5 },
+            ((!aiPromptInput.trim() && !customTemplateFile) || aiRewriteLoading) && { opacity: 0.5 },
             pressed && resStyles.btnPressed,
           ]}
         >
@@ -2940,6 +3274,11 @@ function ResultDashboard({
                     }
                     setCopiedTaskSheet(true);
                     setTimeout(() => setCopiedTaskSheet(false), 2200);
+                    showToast({
+                      title: "Đã sao chép phiếu giao việc",
+                      description: `${tasks.length} nhiệm vụ đã được lưu vào bộ nhớ đệm.`,
+                      type: "success",
+                    });
                   }}
                   style={({ pressed }) => [
                     resStyles.copyBtn,

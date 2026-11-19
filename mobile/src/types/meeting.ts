@@ -96,6 +96,8 @@ export interface AIProcessingResult {
   raw_transcript: string;
   /** Biên bản họp chính thức (Markdown string) */
   minutes: string;
+  /** Engine AI thực tế đã sử dụng: 'gemini' hoặc 'local' */
+  engine_used?: "gemini" | "local";
   /** Danh sách công việc được AI trích xuất */
   tasks: ExtractedTask[];
   /** Metadata xử lý: thời gian, model, số ký tự... */
@@ -114,6 +116,7 @@ export interface ProcessingMetadata {
   file_size_bytes?: number;
   saved_file_path?: string;
   tasks_saved_to_db?: number;
+  engine_used?: "gemini" | "local";
 }
 
 // ---------------------------------------------------------------------------
@@ -122,6 +125,7 @@ export interface ProcessingMetadata {
 export type ProgressStatus =
   | "uploading"
   | "transcribing"
+  | "synthesizing"
   | "summarizing"
   | "completed"
   | "failed"
@@ -130,12 +134,20 @@ export type ProgressStatus =
   | "unknown"
   | "error";
 
+export interface AsyncUploadAcceptedResponse {
+  status: "processing";
+  meeting_id: number;
+  audio_file_url?: string;
+  message?: string;
+}
+
 export interface ProgressData {
   meeting_id: number;
   status: ProgressStatus;
   progress_percent: number;
   current_step_detail: string;
   partial_transcript: string;
+  engine_used?: "gemini" | "local";
 }
 
 // ---------------------------------------------------------------------------
@@ -177,6 +189,8 @@ export interface AIConfigData {
   gemini_api_key_masked: string;
   preferred_engine: "gemini" | "local";
   active_engine: "gemini" | "local";
+  engine_used?: "gemini" | "local";
+  is_offline_fallback?: boolean;
   active_model: string;
   supported_models: string[];
 }

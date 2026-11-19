@@ -260,8 +260,12 @@ class AIProcessingResult(BaseModel):
     """
     meeting_id: int = Field(..., description="ID cuộc họp đã được xử lý")
     audio_file_url: str = Field(..., description="Đường dẫn file audio đã lưu")
-    raw_transcript: str = Field(..., description="Văn bản thô từ Whisper")
+    raw_transcript: str = Field(..., description="Văn bản thô từ Whisper / Gemini STT")
     minutes: str = Field(..., description="Biên bản họp đã định dạng (Markdown)")
+    engine_used: str = Field(
+        default="gemini",
+        description="Engine AI thực tế đã sử dụng: 'gemini' hoặc 'local'",
+    )
     tasks: list[TaskExtracted] = Field(
         default_factory=list,
         description="Danh sách công việc được AI trích xuất",
